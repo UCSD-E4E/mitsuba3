@@ -23,6 +23,11 @@
         nbformat    # test_tutorials.py
         typing-extensions
       ]);
+
+      # nanothread does find_library(LIBATOMIC NAMES libatomic.so libatomic.so.1)
+      # for GCC's 16-byte CAS. On NixOS that lives in GCC's `lib` output rather
+      # than any standard search path, so CMake needs to be pointed at it.
+      gccLib = pkgs.stdenv.cc.cc.lib;
     in
     {
       devShells.${system}.default = pkgs.mkShell {
@@ -35,9 +40,11 @@
           pythonEnv
         ];
 
-        # Build-time deps only. zlib / libpng / libjpeg-turbo / OpenEXR are all
-        # vendored under ext/, so they are deliberately absent here.
-        buildInputs = [ ];
+        # libpng / libjpeg-turbo are vendored under ext/ and need nothing here.
+        # zlib is the exception: ext/openexr's own OpenEXRSetup.cmake does an
+        # unconditional find_package(ZLIB), so a system zlib must be present even
+        # though Mitsuba itself uses the vendored copy.
+        buildInputs = with pkgs; [ zlib ];
 
         shellHook = ''
           # --- Runtime library resolution -------------------------------------
@@ -58,6 +65,29 @@
           # libcuda.so comes from the NixOS driver, not nixpkgs.
           export LD_LIBRARY_PATH="/run/opengl-driver/lib:${llvmLib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+          # So nanothread's find_library(LIBATOMIC ...) succeeds — see gccLib above.
+          export CMAKE_LIBRARY_PATH="${gccLib}/lib''${CMAKE_LIBRARY_PATH:+:$CMAKE_LIBRARY_PATH}"
+
+          # --- Allow -march=native --------------------------------------------
+          #
+          # Mitsuba, Dr.Jit and struct-jit each default their *_NATIVE_FLAGS cache
+          # variable to -march=native (shared ext/cmake-defaults). The Nix cc-wrapper
+          # strips -m*=native when NIX_ENFORCE_NO_NATIVE_<salt>=1, which breaks
+          # ext/struct-jit/src/half.cpp: it uses F16C intrinsics (_mm_cvtps_ph) that
+          # then fail with "inlining failed in call to always_inline ... target
+          # specific option mismatch".
+          #
+          # Turning the guard off fixes all three at once, rather than overriding
+          # MI_NATIVE_FLAGS / DRJIT_NATIVE_FLAGS / SJIT_NATIVE_FLAGS individually.
+          #
+          # Tradeoff: this makes the build impure — binaries are tuned to *this*
+          # CPU and are not portable to a different microarchitecture. That is the
+          # right call for a local dev/baseline shell (and matches what upstream
+          # does on an ordinary Linux box), but do not reuse these artifacts as if
+          # they were a reproducible build.
+          export NIX_ENFORCE_NO_NATIVE=0
+          export NIX_ENFORCE_NO_NATIVE_${pkgs.stdenv.cc.suffixSalt}=0
+
           echo "mitsuba3 dev shell"
           echo "  cmake   $(cmake --version | head -1 | cut -d' ' -f3)"
           echo "  python  $(python3 --version | cut -d' ' -f2)"
@@ -77,9 +107,18 @@
 
           cat <<'EOF'
 
-  Build:
-    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-    cmake --build build
+  Build (narrow set — both reference backends, fast):
+    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DMI_DEFAULT_VARIANTS="scalar_rgb,llvm_ad_rgb,cuda_ad_rgb"
+    cmake --build build -j 12
+
+  MI_DEFAULT_VARIANTS regenerates build/mitsuba.conf from the template
+  (CMakeLists.txt:112-128), so no conf file needs to be written by hand.
+  It is only consulted when build/mitsuba.conf does not already exist —
+  delete that file (or the build dir) to change the variant set.
+
+  The full default set is:
+    scalar_rgb, scalar_spectral, cuda_ad_rgb, llvm_ad_rgb, llvm_ad_spectral
 
   Then, in each new shell:
     source build/setpath.sh
@@ -87,11 +126,7 @@
   Test:
     pytest src -x -q                       # full suite
     pytest src/render/tests -q              # render tests only
-    pytest src -q -k "not optixdenoiser"    # skip denoiser
-
-  Variants: with no mitsuba.conf, CMakeLists.txt:116 defaults to
-    scalar_rgb, scalar_spectral, cuda_ad_rgb, llvm_ad_rgb, llvm_ad_spectral
-  To build a narrower (much faster) set, write a mitsuba.conf first.
+    pytest src -q -k "not optixdenoiser"    # skip denoiser (no AMD analog)
 
 EOF
         '';
