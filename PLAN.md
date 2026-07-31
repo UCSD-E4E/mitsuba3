@@ -178,6 +178,83 @@ the same way, so mirror it rather than rediscovering it.
 
 ---
 
+## 0.3 Interim plan — developing on the local NVIDIA GPU
+
+An MI210 host is being procured. Until it lands, **the RTX 3060 laptop is the development
+platform**. This is more capable than §3.5 originally assumed, and a large fraction of the
+project is unblocked.
+
+### The dual-validation harness
+
+Emit the kernel source **once**, then check it two independent ways. This is the core of
+the interim setup and it exists because §3.1 chose source emission:
+
+```
+                      hip_eval.cpp emits HIP C++ source
+                                    |
+              +---------------------+---------------------+
+              |                                           |
+   hipcc --offload-arch=gfx90a                 NVRTC + CUDA driver API
+   --genco  (compile only)                     (compile AND execute)
+              |                                           |
+   Does it compile for the REAL                Are the NUMBERS right?
+   target? Address spaces, wave64              Compare against llvm_ad_rgb,
+   intrinsics, ISA validity.                   which is already green here.
+```
+
+Neither path needs AMD hardware. Together they cover the two ways codegen fails: *invalid
+for the target* and *valid but wrong*. Both were verified working in §0.2.
+
+### What is unblocked, and what is not
+
+| Phase | Status without an MI210 |
+|---|---|
+| 0a — wiring skeleton | **Full speed.** Never needed hardware. |
+| 2 — codegen (6–10 wks, the big one) | **Full speed** via dual validation. |
+| 3 — device library | **Full speed.** `hipcc` compiles `kernels.cu` for `gfx90a`; numerics check via the NVIDIA path. |
+| 4 — advanced ops | **Mostly.** Software textures (§4) and scatter are testable; wave64 ballot **semantics** are not (see below). |
+| 6 — Dr.Jit layer | **Mostly.** Traits and Python namespaces need no device. |
+| 1 — runtime/driver | **Write, cannot execute.** Mechanical ~1:1 port of `cuda_api.cpp`, so low risk deferred. |
+| 5 — ray tracing | **Blocked.** HIP-RT traversal must run. |
+| 7, 8 — Mitsuba + spectral | **Blocked** end to end. |
+
+That is roughly **Phases 0a, 2, 3 — the largest single block of work in §6** — proceeding
+at full speed. The MI210 gates integration and execution, not the expensive intellectual
+work.
+
+### Use the existing CUDA runtime as a test harness
+
+Do **not** wait on the HIP runtime layer to start executing generated kernels. drjit-core
+already has a working CUDA backend built on the driver API. For interim testing, pair
+**HIP codegen with the existing CUDA runtime path**: emit HIP C++ source, compile it with
+NVRTC, and launch it through the machinery in `cuda_core.cpp` / `cuda_ts.cpp`.
+
+This validates the expensive, high-variance part (codegen) against real execution while
+deferring the cheap, mechanical part (the `cu*` → `hip*` runtime port), which carries
+little risk and is trivially verified once hardware exists.
+
+### The honest gap: wave64 semantics
+
+The 3060 is warp-32. §3.3's width parameter means reduction and ballot paths are
+*exercised* at 32, which catches structural errors — but **width-64 behaviour is not
+verified**. Ballots do not fit a `b32`, and `shfl` lane masks differ. §0.2 measured 24
+`shfl` + `vote` + `activemask` in a Cornell box at 1 spp, so this is the hot path of every
+render, not a corner case.
+
+Treat every wave64-dependent path as **unverified until MI210 access**, and keep a running
+list of them rather than discovering it at integration time. This is §7.2, and it is now
+the project's highest risk following §7.3's resolution.
+
+### Optional: package HIP-for-NVIDIA
+
+Executing against the *actual HIP API* locally would additionally unblock Phase 1. It
+needs a `clr` override built with `__HIP_PLATFORM_NVIDIA__`, or vendored `nvidia_detail`
+headers (§3.5). Feasibility is unconfirmed — the headers are absent from every nixpkgs
+ROCm output *and* from `hip-common.src`, so this needs investigation before it is promised.
+Not on the critical path: the dual-validation harness above covers codegen without it.
+
+---
+
 ## 1. The most important fact about this tree
 
 **This is not stock Mitsuba 3 / Dr.Jit.** A second GPU backend (Apple Metal) has
@@ -893,9 +970,9 @@ will hurt. See §9.
 1. ~~**Does HIP-RT support `gfx90a`?**~~ **ANSWERED: yes** — HIP-RT 3.0.3, verified
    locally (§0.2). `gfx90a` gets `HIPRT_RTIP 0`, so traversal is software-only; that is a
    Phase 8 performance question, not an availability one.
-2. Confirm the ROCm version, `hiprtc`, and comgr availability on the MI210 host. *(Note:
-   no ROCm and no AMD hardware is present on the current dev machine — only an RTX 3060
-   + Intel iGPU. MI210 access is a prerequisite for Phase 0b.)*
+2. Confirm the ROCm version, `hiprtc`, and comgr availability on the MI210 host once it
+   lands. An MI210 is being procured; until then development runs on the local NVIDIA box
+   per §0.3, which does not block Phases 0a, 2 or 3.
 3. FP64: MI210 is full-rate double precision, so the double path is first-class rather
    than an afterthought. Which Mitsuba spectral kernels should be numerically validated
    against CUDA/LLVM first?
@@ -946,15 +1023,23 @@ rebasing against it for six months.
 
 ## 10. Next actions
 
-**Critical path:**
-1. **Answer §8.1** — HIP-RT `gfx90a` support. Everything downstream keys off this.
-2. **Stand up ROCm on an MI210 host** (§8.2). Phase 0b is meaningless without it.
-3. **Start Phase 0a wiring** (mechanical, no hardware needed) **in parallel with the 0b
-   spike.**
-4. **Read [metal_eval.cpp](ext/drjit/ext/drjit-core/src/metal_eval.cpp),
+**Critical path — all of this proceeds on the local NVIDIA box (§0.3):**
+1. ~~**Answer §8.1**~~ **Done (§0.2)** — HIP-RT supports `gfx90a`.
+2. **Read [metal_eval.cpp](ext/drjit/ext/drjit-core/src/metal_eval.cpp),
    [metal.h](ext/drjit/ext/drjit-core/src/metal.h), and
    [scene_metal.inl](src/render/scene_metal.inl) end to end** before writing any HIP code.
    Highest-leverage day in the project.
+3. **Phase 0a wiring** — mechanical, no hardware.
+4. **Stand up the §0.3 dual-validation harness** before writing opcode templates: one
+   emitted source, checked by `hipcc --offload-arch=gfx90a --genco` for target validity and
+   by NVRTC + the existing CUDA runtime for numerical correctness. Building this first
+   means every subsequent opcode lands with both checks already in place.
+5. **Phase 2 codegen** — the 6–10 week block, fully unblocked.
+6. **Keep a running list of wave64-unverified paths** (§0.3). The 3060 is warp-32, so those
+   are the first thing to exercise when MI210 access arrives.
+
+**On MI210 arrival:** Phase 1 execution, Phase 5 (RT), Phases 7–8 (integration), and the
+wave64 backlog.
 
 **Cheap, parallel, no fleet required (§0):**
 5. **Answer the three PanVK gates** (§3.0.1) from existing PanVK work —
