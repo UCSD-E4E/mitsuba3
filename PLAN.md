@@ -104,6 +104,80 @@ MI210s** — see §3.0.1.
 
 ---
 
+## 0.2 Spike results — measured, not assumed
+
+Run locally on an x86_64 NixOS laptop (RTX 3060 Mobile, **no AMD hardware**). These
+replace assumptions elsewhere in this document; each is cross-referenced from the
+section it affects.
+
+**§8.1 ANSWERED — HIP-RT supports `gfx90a`.** The project's #1 risk, resolved favorably.
+`rocmPackages.hiprt` 3.0.3 is packaged and unbroken, and `hiprt_common.h` handles
+`__gfx90a__` explicitly. **Phase 0b's gate is materially de-risked before it starts.**
+
+**Software traversal confirmed (§7.3 caveat holds).** HIP-RT's RTIP tiers are 3.1
+(gfx1200/1201) → 2.0 (gfx1100–1153) → 1.1 (gfx1030–1036) → **`#else #define HIPRT_RTIP 0`,
+where `gfx90a` lands.** No hardware RT, exactly as predicted. The *availability* risk is
+gone; the *performance* caveat is unchanged and still needs Phase 8 measurement.
+
+**The full ROCm toolchain runs here without AMD hardware.** `hipcc` + `rocm-device-libs`
++ `clr` + `hiprt` all come from nixpkgs. HIP source compiles to a verified target:
+```
+bundle target:  hipv4-amdgcn-amd-amdhsa--gfx90a
+ELF:            EM_AMDGPU, flags 0x53f, gfx90a, xnack, sramecc
+ISA:            s_and_saveexec_b64, 64-bit vcc   (wave64 visible in the encoding)
+```
+This proves §7.1's claim: codegen errors are catchable without a GPU. **Phase 2 develops
+against the real target**, which is better than the §3.5 NVIDIA fallback anticipated.
+
+**§3.3 independently validated.** HIP-RT itself does:
+```c
+#if __gfx900__ || ... || __gfx90a__ || ... || __gfx942__
+constexpr uint32_t WarpSize = 64;
+#else
+constexpr uint32_t WarpSize = 32;
+#endif
+```
+An arch-varying compile-time constant — exactly the single-definition parameter §3.3
+argues for. Follow HIP-RT's convention rather than inventing one.
+
+**§7.4 quantified — compile latency is a non-issue.** Runtime source generation → NVRTC →
+`cuModuleLoadData` → launch, verified working. Cold-compile scaling:
+
+| src lines | PTX lines | compile |
+|---|---|---|
+| 106 | 260 | 24 ms |
+| **1006** | **2060** | **76 ms** |
+| 2006 | 4060 | 142 ms |
+| 4006 | 8060 | 382 ms |
+
+The real Mitsuba raygen megakernel is **2039 PTX lines**, so a megakernel-scale cold
+compile is **~76 ms** — noise against a render, and removed entirely by the `~/.drjit`
+cache. Caveats: `hiprtc` is not NVRTC, and the synthetic kernel is straight-line `fma`
+with no calls or control flow, so treat this as an optimistic lower bound of the right
+order. Note the superlinearity past ~2000 ops.
+
+**Codegen scale measured.** The `cuda_ad_rgb` Cornell-box raygen kernel at 1 spp — the
+*simplest possible scene* — is **2039 lines of PTX across 54 distinct opcodes**. That is
+the floor for what the HIP emitter must cover.
+
+**§3.3 evidenced in the hot path.** That same kernel contains `24 shfl`, `2 vote`,
+`1 activemask`, `1 match`, `popc`, `brev`, `bfind`. Warp-level primitives are in **every
+render**, not just the reduction library — which is why §7.2 is labelled wide blast radius.
+
+**§3.2 validated emphatically.** The OptiX call in the real kernel is
+`_optix_hitobject_traverse` with **~50 arguments** (32 outputs, 30 payload slots), against
+`jit_metal_ray_trace`'s **8 outputs**. Mirroring Metal avoids roughly an order of magnitude
+of interface complexity.
+
+**Driver-ABI gotcha for the `hip_api.cpp` port.** `cuMemAlloc` / `cuMemcpyDtoH` /
+`cuCtxCreate` must be bound as **`_v2`** symbols; the unversioned ones resolve fine but are
+legacy variants with different signatures, failing at runtime with a misleading
+`CUDA_ERROR_INVALID_CONTEXT`. drjit-core already handles this
+([cuda_api.cpp:106](ext/drjit/ext/drjit-core/src/cuda_api.cpp#L106)); HIP versions symbols
+the same way, so mirror it rather than rediscovering it.
+
+---
+
 ## 1. The most important fact about this tree
 
 **This is not stock Mitsuba 3 / Dr.Jit.** A second GPU backend (Apple Metal) has
@@ -740,10 +814,19 @@ Ballots and shuffles are not mechanically substitutable (§3.3). Mitigation: aud
 before Phase 3 rather than debugging numerically wrong reductions afterward. `gfx90a`
 being wave64-only removes an entire class of variability.
 
-### 7.3 **HIP-RT on `gfx90a` — the load-bearing unknown (highest risk)**
-HIP-RT's published support matrix has historically centered on RDNA; CDNA coverage has
-been uneven. **This is a blocking question, not an assumption** (§8.1), and it is what
-the Phase 0b spike exists to answer.
+### 7.3 HIP-RT on `gfx90a` — ~~highest risk~~ **RESOLVED (§0.2)**
+**HIP-RT 3.0.3 supports `gfx90a`**, confirmed locally: `rocmPackages.hiprt` is packaged
+and unbroken, and `hiprt_common.h` handles `__gfx90a__` explicitly. The availability risk
+is closed and this is no longer the project's highest risk — that title passes to §7.1
+(codegen effort) and §7.2 (wave64).
+
+**The performance caveat stands, unchanged.** HIP-RT assigns `gfx90a` `HIPRT_RTIP 0` (the
+`#else` branch; tiers are 3.1/2.0/1.1 for RDNA2+), i.e. **software BVH traversal, no
+hardware RT**. Whether that is fast enough for the fishsense workload is a Phase 8
+measurement, not an availability question.
+
+The fallbacks below are retained as contingency should traversal prove too slow in
+practice, but they are no longer on the expected path.
 
 **Fallbacks, in preference order, if HIP-RT does not clear the gate:**
 1. **Port Mitsuba's own kd-tree.** [scene_native.inl](src/render/scene_native.inl) +
@@ -759,7 +842,7 @@ workload even if HIP-RT works. Measure in Phase 8 — but be aware this is a pro
 the card, not of our implementation, and no amount of engineering recovers hardware
 that isn't there.
 
-### 7.4 `hiprtc` compile latency (low risk, known cost)
+### 7.4 `hiprtc` compile latency (low risk — now quantified, §0.2)
 A full Clang front-end per kernel. Mitigation: the existing `~/.drjit` disk kernel cache
 with a HIP tag (§8.4) absorbs it in steady state. If it proves fatal, §3.1's emit
 abstraction keeps the IR + comgr route open.
@@ -778,9 +861,9 @@ will hurt. See §9.
    fleet on `llvm_ad_spectral` (zero engineering) may suffice and *both* GPU tracks drop to
    nice-to-have. This question sizes the entire project and should be answered before
    week 1, not at the month-6 review. See §0.
-1. **Does HIP-RT support `gfx90a`, and in which ROCm versions?** Blocking. Owns the
-   Phase 0b gate and §7.3. If unavailable, take a §7.3 fallback — the target does not
-   change.
+1. ~~**Does HIP-RT support `gfx90a`?**~~ **ANSWERED: yes** — HIP-RT 3.0.3, verified
+   locally (§0.2). `gfx90a` gets `HIPRT_RTIP 0`, so traversal is software-only; that is a
+   Phase 8 performance question, not an availability one.
 2. Confirm the ROCm version, `hiprtc`, and comgr availability on the MI210 host. *(Note:
    no ROCm and no AMD hardware is present on the current dev machine — only an RTX 3060
    + Intel iGPU. MI210 access is a prerequisite for Phase 0b.)*
