@@ -537,7 +537,36 @@ Follow the CUDA/Metal precedent: `DRJIT_ENABLE_HIP` + `DRJIT_DYNAMIC_HIP`, resol
 present. [cuda_api.cpp](ext/drjit/ext/drjit-core/src/cuda_api.cpp) already does exactly
 this and ports near 1:1 (`cu*` → `hip*`).
 
-### 3.5 NVIDIA as a development and CI platform (a free win from §3.1)
+### 3.5 Local development without an MI210 (revised after §0.2 measurements)
+
+> **Revision.** This section was written on the premise that we could not compile for AMD
+> locally, making NVIDIA the necessary proxy. **That premise was wrong** (§0.2): `hipcc`
+> produces verified `gfx90a` code objects on an ordinary x86_64 NixOS laptop with no AMD
+> hardware. Codegen validation — the bulk of Phase 2 — needs no NVIDIA proxy at all.
+>
+> What NVIDIA would still add is **execution**: running a generated kernel and checking the
+> numbers. That remains valuable, with one packaging caveat.
+>
+> **HIP-for-NVIDIA is real but not packaged.** ROCm's own docs confirm official support
+> ("HIP can be installed on AMD ... and NVIDIA (CUDA with NVCC) platforms", requiring
+> compute capability ≥ 5.0; the local RTX 3060 is 8.6). `hip_runtime.h` dispatches on
+> `__HIP_PLATFORM_NVIDIA__` to `hip/nvidia_detail/nvidia_hip_runtime.h`. But
+> **`nvidia_detail/` ships nowhere in nixpkgs** — absent from `rocmPackages.clr` (which
+> carries all 51 `amd_detail` headers), from `hip-common`, and from `hip-common.src`.
+> nixpkgs builds ROCm AMD-platform only. Enabling it means packaging a `clr` override built
+> with `__HIP_PLATFORM_NVIDIA__`, or vendoring the headers.
+>
+> **This vindicates the NVRTC-direct recommendation below, for an additional reason.** It
+> was recommended for lower friction; it is now also the only local-execution path that
+> works without packaging effort. Verified end to end in §0.2.
+>
+> | Capability | Status |
+> |---|---|
+> | Compile for real `gfx90a` | **Works now** — better than this section assumed |
+> | Execute generated kernels locally | NVRTC-direct — works now |
+> | Execute against the actual HIP API locally | Needs `clr` packaging work |
+
+#### Original rationale (still correct on the mechanics)
 
 HIP is a portable language, not an AMD-only one. On an NVIDIA host, `hipcc` wraps
 `nvcc`, the HIP headers inline `hip*` calls to `cuda*`, and — the part that matters —
