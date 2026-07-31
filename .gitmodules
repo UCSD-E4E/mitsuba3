@@ -39,7 +39,7 @@
 	shallow = true
 [submodule "ext/drjit"]
 	path = ext/drjit
-	url = https://github.com/mitsuba-renderer/drjit
+	url = git@github.com:UCSD-E4E/drjit.git
 [submodule "ext/nanobind"]
 	path = ext/nanobind
 	url = https://github.com/wjakob/nanobind.git
