@@ -28,9 +28,35 @@
       # for GCC's 16-byte CAS. On NixOS that lives in GCC's `lib` output rather
       # than any standard search path, so CMake needs to be pointed at it.
       gccLib = pkgs.stdenv.cc.cc.lib;
+
+      # --- HIP backend toolchain (PLAN.md §0.3) --------------------------------
+      #
+      # Kept in a *separate* devShell so the default one above stays free of
+      # unfree packages. NVRTC is the only unfree component and it is needed
+      # solely for the dual-validation harness's execution path.
+      unfreePkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+
+      rocm         = unfreePkgs.rocmPackages;
+      hipClr       = rocm.clr;                 # provides bin/hipcc
+      hipDeviceLib = rocm.rocm-device-libs;    # amdgcn/bitcode, else hipcc errors
+      hipRt        = rocm.hiprt;               # HIP-RT: confirmed gfx90a (§0.2)
+      # clang-offload-bundler, for confirming a code object really carries the
+      # requested target. Offload bundles are compressed, so the target string
+      # is not findable by grep -- the bundler is the only reliable check.
+      rocmClang    = rocm.llvm.clang-unwrapped;
+      # llvm-objcopy lives here, not in clang-unwrapped; the bundler shells out
+      # to it and fails with "unable to find 'llvm-objcopy' in path" without it.
+      rocmLlvm     = rocm.llvm.llvm;
+      nvrtcLib     = unfreePkgs.cudaPackages.cuda_nvrtc.lib;
+      nvrtcInc     = unfreePkgs.cudaPackages.cuda_nvrtc.include;
     in
     {
-      devShells.${system}.default = pkgs.mkShell {
+      devShells.${system} = {
+
+      default = pkgs.mkShell {
         name = "mitsuba3";
 
         nativeBuildInputs = with pkgs; [
@@ -130,6 +156,68 @@
 
 EOF
         '';
+      };
+
+      # --- HIP backend development shell (PLAN.md §0.3) -----------------------
+      #
+      #   nix develop .#hip
+      #
+      # Provides both arms of the dual-validation harness:
+      #
+      #   hipcc --offload-arch=gfx90a --genco   -> valid for the REAL target?
+      #   NVRTC + libcuda                       -> are the NUMBERS right?
+      #
+      # Neither arm requires AMD hardware. See PLAN.md §0.2 for the measurements
+      # that established this and §0.3 for how the two arms are used together.
+      hip = unfreePkgs.mkShell {
+        name = "drjit-hip";
+
+        # rocmClang is on PATH, not just referenced by absolute path:
+        # clang-offload-bundler shells out to llvm-objcopy and fails with
+        # "unable to find 'llvm-objcopy' in path" otherwise.
+        nativeBuildInputs = (with unfreePkgs; [ cmake ninja git ]) ++ [ rocmClang rocmLlvm ];
+
+        shellHook = ''
+          export HIPCC="${hipClr}/bin/hipcc"
+          export HIP_PATH="${hipClr}"
+          export HIP_DEVICE_LIB_PATH="${hipDeviceLib}/amdgcn/bitcode"
+          export HIPRT_PATH="${hipRt}"
+          export HIP_BUNDLER="${rocmClang}/bin/clang-offload-bundler"
+          export HIP_OBJDUMP="${rocmLlvm}/bin/llvm-objdump"
+          export NVRTC_INCLUDE="${nvrtcInc}/include"
+          export NVRTC_LIB="${nvrtcLib}/lib"
+          export HIP_TARGET_ARCH="gfx90a"
+
+          # libcuda comes from the NixOS driver; NVRTC from nixpkgs.
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:${nvrtcLib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+          # hipcc cannot find the device bitcode on NixOS without this.
+          export HIPCC_COMPILE_FLAGS_APPEND="--rocm-device-lib-path=$HIP_DEVICE_LIB_PATH"
+
+          echo "drjit HIP dev shell — target $HIP_TARGET_ARCH"
+          [ -x "$HIPCC" ] && echo "  hipcc   ok" || echo "  hipcc   MISSING"
+          [ -d "$HIP_DEVICE_LIB_PATH" ] && echo "  devlibs ok" || echo "  devlibs MISSING"
+          [ -e "$HIPRT_PATH/include/hiprt/hiprt.h" ] && echo "  hiprt   ok (gfx90a supported — PLAN §0.2)" || echo "  hiprt   MISSING"
+          [ -e "$NVRTC_LIB/libnvrtc.alt.so.12" ] && echo "  nvrtc   ok" || echo "  nvrtc   MISSING"
+          [ -e /run/opengl-driver/lib/libcuda.so ] && echo "  libcuda ok (execution arm available)" || echo "  libcuda MISSING — execution arm unavailable"
+
+          cat <<'EOF'
+
+  Build the harness (from the drjit-core checkout). It is standalone --
+  it does NOT build drjit-core, and adds no upstream seam:
+    cmake -S tools/hip_validate -B build-hip -G Ninja
+    cmake --build build-hip
+
+  Run it on a kernel:
+    ./build-hip/hip_validate tools/hip_validate/kernels/smoke_arith.hip
+
+  Both arms run by default; --no-exec or --no-gfx skips one.
+  See tools/hip_validate/README.md for the kernel contract.
+
+EOF
+        '';
+      };
+
       };
     };
 }
