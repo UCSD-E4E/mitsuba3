@@ -241,7 +241,9 @@ EOF
           export CUDART_LIB="${cudaRt}/lib"
 
           # libcuda comes from the NixOS driver; NVRTC from nixpkgs.
-          export LD_LIBRARY_PATH="/run/opengl-driver/lib:${nvrtcLib}/lib:${cudaRt}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # llvmLib too: drjit-core dlopens libLLVM for the LLVM backend, and its
+          # test suite runs from this shell.
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:${nvrtcLib}/lib:${cudaRt}/lib:${llvmLib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           # hipcc cannot find the device bitcode on NixOS without this.
           export HIPCC_COMPILE_FLAGS_APPEND="--rocm-device-lib-path=$HIP_DEVICE_LIB_PATH"
