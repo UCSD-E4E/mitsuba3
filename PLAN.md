@@ -4,6 +4,11 @@
 **Consumer:** the fishsense pipeline running **Mitsuba 3 in a spectral variant** on MI210.
 **Deliverable:** a working `hip_ad_spectral` (and `hip_ad_rgb`) Mitsuba variant.
 
+**Status:** Phase 0a complete; Phase 2 foundations complete and specified. All work
+so far done on an x86_64 NixOS laptop with an RTX 3060 and **no AMD hardware** --
+see §0.2 for why that is possible and §0.3 for how far it goes. Everything now
+remaining needs the MI210 (§10).
+
 This plan covers the **whole effort across all three layers**: Dr.Jit-Core (the bulk),
 Dr.Jit (thin), and Mitsuba 3 (small). Splitting it into separate per-repo plans hides
 the sequencing dependencies and — as shown in §2 — badly misestimates the Mitsuba side.
@@ -718,6 +723,15 @@ matching embed step.
 
 ### Phase 0 — Wiring skeleton + de-risking spike (parallel)
 
+> **✅ 0a DONE.** `JitBackend::HIP = 4`, `Count = 5`, `jitc_is_hip()`, `HIPDevice`
+> (carrying `warp_size` as §3.3's single-definition parameter), dispatch arms in
+> `init.cpp` / `api.cpp` / `eval.cpp`, and `DRJIT_ENABLE_HIP` (default OFF) in CMake.
+> `jitc_hip_init()` returns false, so the backend is registered but inert.
+> Locked in by `tests/hip_wiring.cpp`; both build paths verified clean.
+>
+> **⏳ 0b BLOCKED on MI210.** Needs hardware by definition. Note §0.2 has already
+> de-risked its main question: HIP-RT supports `gfx90a`.
+
 **0a. Wiring (mechanical, drjit-core).** Add `JitBackendHIP = 4` and bump
 `JitBackendCount` in
 [jit.h:70-76](ext/drjit/ext/drjit-core/include/drjit-core/jit.h#L70-L76); extend
@@ -748,6 +762,41 @@ Port `cuda_api` → `hip_api`, `cuda_core` → `hip_core`, minimal `hip_ts`.
 *Milestone: create, write, and read back a `HIPArray<float>`.*
 
 ### Phase 2 — Codegen (the big one)
+
+> **⏳ IN PROGRESS.** Everything that could be built without hardware has been.
+>
+> **Done — pure components, each test-first with a contract test:**
+> | Component | Source | Test |
+> |---|---|---|
+> | Type mapping | `src/hip_eval.h` | `tests/hip_types.cpp` |
+> | Literal materialisation | `src/hip_literal.h` | `tests/hip_literal.cpp` |
+> | Kernel prologue | `src/hip_prologue.h` | `tests/hip_prologue.cpp` |
+> | Source reindent | `src/hip_format.h` | `tests/hip_format.cpp` |
+>
+> **Done — opcode specification.** `tools/hip_validate/kernels/spec_*.hip` hand-write
+> the source the emitter must produce for ~45 VarKinds (arithmetic, compare/select,
+> bitwise, casts, transcendentals, memory, wave ops, wide multiply), shaped as machine
+> output. Self-checking via `--expect-zero`, and every one is proven to compile for
+> real `gfx90a` **and** compute correctly. 15 passed / 0 failed.
+>
+> **Blocked — the emitter itself.** `jitc_hip_render()` and the variable loop take
+> `Variable*` / `ScheduledGroup`; reaching them needs `jit_malloc`, a ThreadState and
+> scheduling, i.e. most of Phase 1 (BACKEND_NOTES §11 "Known limit"). A codegen-only
+> mode was considered and rejected as too invasive.
+>
+> **Constraints discovered, binding on the emitter** — full detail in BACKEND_NOTES
+> §11a/§11c, summarised here because each one compiles cleanly and is still wrong:
+> - Emit CUDA/HIP device intrinsics, **never Clang `__builtin_*`** — hipcc accepts them,
+>   NVRTC does not, and they pin generated source to one compiler.
+> - `Round` is `rintf` (nearest-**even**), not `roundf` (half away from zero).
+> - `__exp2f` does not exist on either platform; use `exp2f`.
+> - **No `__syncthreads()` below the prologue's bounds-check `return`** — undefined,
+>   and fails at *launch*, not compile.
+> - **Atomics must target global memory**, never a materialised temporary — likewise a
+>   launch-time failure.
+> - Approximation ops are not bit-exact across backends and must be pinned with
+>   tolerances, with accurate and approximate forms held to *different* ones.
+
 `hip_eval.cpp`: emit HIP C++ source per §3.1's defensive-emission rule, compile via
 `hiprtc`, launch via `hipModuleLaunchKernel`. Bring opcodes up incrementally: arithmetic →
 compare/select → memory (gather/scatter) → control flow (loops, `if`) → dynamic dispatch
@@ -1023,23 +1072,32 @@ rebasing against it for six months.
 
 ## 10. Next actions
 
-**Critical path — all of this proceeds on the local NVIDIA box (§0.3):**
-1. ~~**Answer §8.1**~~ **Done (§0.2)** — HIP-RT supports `gfx90a`.
-2. **Read [metal_eval.cpp](ext/drjit/ext/drjit-core/src/metal_eval.cpp),
-   [metal.h](ext/drjit/ext/drjit-core/src/metal.h), and
-   [scene_metal.inl](src/render/scene_metal.inl) end to end** before writing any HIP code.
-   Highest-leverage day in the project.
-3. **Phase 0a wiring** — mechanical, no hardware.
-4. **Stand up the §0.3 dual-validation harness** before writing opcode templates: one
-   emitted source, checked by `hipcc --offload-arch=gfx90a --genco` for target validity and
-   by NVRTC + the existing CUDA runtime for numerical correctness. Building this first
-   means every subsequent opcode lands with both checks already in place.
-5. **Phase 2 codegen** — the 6–10 week block, fully unblocked.
-6. **Keep a running list of wave64-unverified paths** (§0.3). The 3060 is warp-32, so those
-   are the first thing to exercise when MI210 access arrives.
+**✅ Completed on the local NVIDIA box — no AMD hardware involved:**
+1. ~~Answer §8.1~~ — HIP-RT supports `gfx90a` (§0.2).
+2. ~~Read `metal_eval.cpp` / `metal.h` / `scene_metal.inl` end to end~~ — distilled into
+   `tools/hip_validate/BACKEND_NOTES.md`, the `hip_eval.cpp` blueprint.
+3. ~~Phase 0a wiring~~ — backend registered but inert, locked by `tests/hip_wiring.cpp`.
+4. ~~Stand up the dual-validation harness~~ — `tools/hip_validate`, both arms working.
+5. ~~Phase 2 pure components~~ — types, literals, prologue, reindent; all test-first.
+6. ~~Opcode specification~~ — `spec_*.hip` for ~45 VarKinds, self-checking, 15/15 green.
+7. ~~Wave64-unverified list~~ — now emitted by `run_tests.sh` on every run rather than
+   kept in prose.
 
-**On MI210 arrival:** Phase 1 execution, Phase 5 (RT), Phases 7–8 (integration), and the
-wave64 backlog.
+**⏳ Blocked on MI210 — in the order to tackle them:**
+1. **Re-run the unverified list first.** `run_tests.sh` names them: currently
+   `smoke_half`, `smoke_literal`, `smoke_types`, `smoke_warp`, `spec_wave`. These are
+   cheap, and they are where a latent wave64 or fp16 bug will surface.
+2. **Phase 1** — `hip_api` / `hip_core` / `hip_ts`, the mechanical `cu*` → `hip*` port.
+   Low risk, but unverifiable until now.
+3. **Phase 2 emitter** — `jitc_hip_render()` and the variable loop, against the
+   `spec_*.hip` specification. `tests/hip_codegen.cpp` is the acceptance gate; delete its
+   `WILL_FAIL` when it starts passing.
+4. **Phase 0b spike** — the HIP-RT traversal, as `tests/hip_triangle.cpp`.
+5. Phases 3–8.
+
+**Still unanswered, and still worth answering:** §8.0, the task-shape question. It does
+not block the work above, but it determines whether the phone fleet ends up the primary
+platform (§0.1), and it has been open since the start.
 
 **Cheap, parallel, no fleet required (§0):**
 5. **Answer the three PanVK gates** (§3.0.1) from existing PanVK work —
