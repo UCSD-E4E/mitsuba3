@@ -4,9 +4,23 @@
   inputs = {
     # Pin this to whatever you normally track. Adjust freely.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # HIP's NVIDIA-platform headers (nvidia_detail/). These are NOT in
+    # ROCm/HIP and NOT in any nixpkgs ROCm output -- AMD split the NVIDIA
+    # backend into its own repository, which is why searching the HIP tree for
+    # them comes up empty.
+    #
+    # The tag MUST match the clr version in nixpkgs (currently 7.2.3).
+    # Mismatched versions fail deep inside the AMD-side header -- 6.2.0 against
+    # clr 7.2.3 dies on an undefined `hipHostAllocDefault`, which reads like a
+    # packaging fault rather than version skew.
+    hipother = {
+      url = "github:ROCm/hipother/rocm-7.2.0";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, hipother }:
     let
       system = "x86_64-linux";
 
@@ -52,6 +66,25 @@
       rocmLlvm     = rocm.llvm.llvm;
       nvrtcLib     = unfreePkgs.cudaPackages.cuda_nvrtc.lib;
       nvrtcInc     = unfreePkgs.cudaPackages.cuda_nvrtc.include;
+
+      # --- HIP-on-CUDA (PLAN.md §3.5) ----------------------------------------
+      #
+      # Lets the REAL HIP API (hipMalloc, hipModuleLaunchKernel, ...) compile
+      # with nvcc and run on an NVIDIA GPU, so Phase 1 can be written and
+      # tested without an MI210. Needs four ingredients, none obvious:
+      #
+      #   1. hipother          -- the nvidia_detail/ headers (flake input)
+      #   2. cuda_cudart       -- cuda_runtime.h
+      #   3. cuda_profiler_api -- cuda_profiler_api.h, pulled in by
+      #                           nvidia_hip_runtime_api.h
+      #   4. cuda_cccl         -- nv/target, pulled in by cuda_fp16.h
+      #
+      # Each was discovered only by following the include chain one failure at
+      # a time; the error messages do not suggest the package names.
+      cudaRt       = unfreePkgs.cudaPackages.cuda_cudart;
+      cudaProf     = unfreePkgs.cudaPackages.cuda_profiler_api.include;
+      cudaCccl     = unfreePkgs.cudaPackages.cuda_cccl;
+      nvcc         = unfreePkgs.cudaPackages.cuda_nvcc;
     in
     {
       devShells.${system} = {
@@ -175,7 +208,8 @@ EOF
         # rocmClang is on PATH, not just referenced by absolute path:
         # clang-offload-bundler shells out to llvm-objcopy and fails with
         # "unable to find 'llvm-objcopy' in path" otherwise.
-        nativeBuildInputs = (with unfreePkgs; [ cmake ninja git ]) ++ [ rocmClang rocmLlvm ];
+        nativeBuildInputs = (with unfreePkgs; [ cmake ninja git ])
+          ++ [ rocmClang rocmLlvm nvcc ];
 
         shellHook = ''
           export HIPCC="${hipClr}/bin/hipcc"
@@ -188,8 +222,23 @@ EOF
           export NVRTC_LIB="${nvrtcLib}/lib"
           export HIP_TARGET_ARCH="gfx90a"
 
+          # --- HIP-on-CUDA: build the real HIP API against nvcc ---------------
+          #
+          # Compile with:
+          #   nvcc -x cu -D__HIP_PLATFORM_NVIDIA__ $HIPNV_CFLAGS <src> $HIPNV_LDFLAGS
+          #
+          # This exercises hipMalloc / hipLaunchKernelGGL / hipMemcpy for real,
+          # which the CUDA shim deliberately does not. See §3.5 for the limits:
+          # on NVIDIA, HIP is a header-level translation to CUDA, so this
+          # validates API USAGE (signatures, argument order, flags, error
+          # handling) and says nothing about AMD behaviour.
+          export HIPNV_INCLUDE="${hipother}/hipnv/include"
+          export HIPNV_CFLAGS="-D__HIP_PLATFORM_NVIDIA__ -diag-suppress 1056 -I${hipother}/hipnv/include -I${hipClr}/include -I${cudaRt}/include -I${cudaProf}/include -I${cudaCccl}/include"
+          export HIPNV_LDFLAGS="-L${cudaRt}/lib -lcudart"
+          export CUDART_LIB="${cudaRt}/lib"
+
           # libcuda comes from the NixOS driver; NVRTC from nixpkgs.
-          export LD_LIBRARY_PATH="/run/opengl-driver/lib:${nvrtcLib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:${nvrtcLib}/lib:${cudaRt}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           # hipcc cannot find the device bitcode on NixOS without this.
           export HIPCC_COMPILE_FLAGS_APPEND="--rocm-device-lib-path=$HIP_DEVICE_LIB_PATH"

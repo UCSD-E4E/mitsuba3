@@ -4,10 +4,11 @@
 **Consumer:** the fishsense pipeline running **Mitsuba 3 in a spectral variant** on MI210.
 **Deliverable:** a working `hip_ad_spectral` (and `hip_ad_rgb`) Mitsuba variant.
 
-**Status:** Phase 0a complete; Phase 2 foundations complete and specified. All work
-so far done on an x86_64 NixOS laptop with an RTX 3060 and **no AMD hardware** --
-see §0.2 for why that is possible and §0.3 for how far it goes. Everything now
-remaining needs the MI210 (§10).
+**Status:** Phase 0a complete; Phase 2 foundations complete and specified; Phase 1
+unblocked. All work so far done on an x86_64 NixOS laptop with an RTX 3060 and **no
+AMD hardware** -- §0.2 covers why that is possible, §0.3 the CUDA shim, and §3.5
+HIP-on-CUDA, which runs the real HIP API locally. What genuinely still needs the
+MI210 is AMD-specific behaviour: wave64 semantics, fp16 numerics, and HIP-RT (§10).
 
 This plan covers the **whole effort across all three layers**: Dr.Jit-Core (the bulk),
 Dr.Jit (thin), and Mitsuba 3 (small). Splitting it into separate per-repo plans hides
@@ -629,24 +630,48 @@ this and ports near 1:1 (`cu*` → `hip*`).
 > What NVIDIA would still add is **execution**: running a generated kernel and checking the
 > numbers. That remains valuable, with one packaging caveat.
 >
-> **HIP-for-NVIDIA is real but not packaged.** ROCm's own docs confirm official support
-> ("HIP can be installed on AMD ... and NVIDIA (CUDA with NVCC) platforms", requiring
-> compute capability ≥ 5.0; the local RTX 3060 is 8.6). `hip_runtime.h` dispatches on
-> `__HIP_PLATFORM_NVIDIA__` to `hip/nvidia_detail/nvidia_hip_runtime.h`. But
-> **`nvidia_detail/` ships nowhere in nixpkgs** — absent from `rocmPackages.clr` (which
-> carries all 51 `amd_detail` headers), from `hip-common`, and from `hip-common.src`.
-> nixpkgs builds ROCm AMD-platform only. Enabling it means packaging a `clr` override built
-> with `__HIP_PLATFORM_NVIDIA__`, or vendoring the headers.
+> **✅ HIP-for-NVIDIA WORKS. An earlier revision of this section said it did not —
+> that was a bad search, not a real finding.** Verified end to end: `hipMalloc`,
+> `hipLaunchKernelGGL` and `hipMemcpy` compiled by `nvcc` and executed on the local
+> RTX 3060.
 >
-> **This vindicates the NVRTC-direct recommendation below, for an additional reason.** It
-> was recommended for lower friction; it is now also the only local-execution path that
-> works without packaging effort. Verified end to end in §0.2.
+> The headers were not missing, they were **somewhere else**. AMD split the NVIDIA
+> backend into its own repository, **`ROCm/hipother`**, under
+> `hipnv/include/hip/nvidia_detail/`. Searching `ROCm/HIP` — where its own README says
+> they live — turns up nothing, which is what produced the wrong conclusion.
+>
+> Four ingredients, none of which the error messages point at. Each was found by
+> following the include chain one failure at a time:
+>
+> | Need | Package |
+> |---|---|
+> | `nvidia_detail/` headers | `ROCm/hipother` (flake input, **not** in nixpkgs) |
+> | `cuda_runtime.h` | `cudaPackages.cuda_cudart` |
+> | `cuda_profiler_api.h` | `cudaPackages.cuda_profiler_api` |
+> | `nv/target` | `cudaPackages.cuda_cccl` |
+>
+> **The version must match.** `hipother` 7.2.0 against `clr` 7.2.3 works; 6.2.0 fails
+> deep inside the AMD-side header on an undefined `hipHostAllocDefault`, which reads
+> like a packaging fault rather than version skew.
+>
+> All of it is wired into `nix develop .#hip` as `$HIPNV_CFLAGS` / `$HIPNV_LDFLAGS`.
+>
+> **Why this matters more than the CUDA shim.** The shim (§0.3) runs HIP-*shaped*
+> codegen on the CUDA runtime and never touches the HIP API. This runs the **actual
+> HIP API**, so `hip_api.cpp` / `hip_ts.cpp` — Phase 1 — can be written and tested
+> here rather than blind against hardware we do not have.
+>
+> **The limit, unchanged and worth stating plainly.** On NVIDIA, HIP is a header-level
+> translation to CUDA. This validates **API usage** — signatures, argument order, flags,
+> error handling — and says nothing about AMD behaviour. Wave width is still 32, and
+> `hipMalloc`'s MI210 semantics remain unverified.
 >
 > | Capability | Status |
 > |---|---|
-> | Compile for real `gfx90a` | **Works now** — better than this section assumed |
-> | Execute generated kernels locally | NVRTC-direct — works now |
-> | Execute against the actual HIP API locally | Needs `clr` packaging work |
+> | Compile for real `gfx90a` | **Works** (§0.2) |
+> | Execute generated kernels locally | **Works** — NVRTC-direct |
+> | Execute against the actual HIP API locally | **Works** — HIP-on-CUDA |
+> | Validate AMD-specific behaviour / wave64 | Still needs the MI210 |
 
 #### Original rationale (still correct on the mechanics)
 
@@ -1083,8 +1108,11 @@ rebasing against it for six months.
 7. ~~Wave64-unverified list~~ — now emitted by `run_tests.sh` on every run rather than
    kept in prose.
 
-**⏳ Blocked on MI210 — in the order to tackle them:**
-1. **Re-run the unverified list first.** `run_tests.sh` names them: currently
+**⏳ Remaining — most of it now doable locally after all (§3.5):**
+0. **Phase 1 is UNBLOCKED.** HIP-on-CUDA runs the real HIP API on the 3060, so
+   `hip_api.cpp` / `hip_ts.cpp` can be written and tested here. Only AMD-specific
+   behaviour still needs the card.
+1. **On MI210 arrival, re-run the unverified list first.** `run_tests.sh` names them: currently
    `smoke_half`, `smoke_literal`, `smoke_types`, `smoke_warp`, `spec_wave`. These are
    cheap, and they are where a latent wave64 or fp16 bug will surface.
 2. **Phase 1** — `hip_api` / `hip_core` / `hip_ts`, the mechanical `cu*` → `hip*` port.

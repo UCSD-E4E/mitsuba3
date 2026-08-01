@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "hipother": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1762304209,
+        "narHash": "sha256-qHgsAcz8pSTLeaFlG8H5fCbFVpcjwm+6xa5RGC69Otc=",
+        "owner": "ROCm",
+        "repo": "hipother",
+        "rev": "e56867449451fa4e12d068fedf502423a8d29191",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ROCm",
+        "ref": "rocm-7.2.0",
+        "repo": "hipother",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1785454630,
@@ -18,6 +35,7 @@
     },
     "root": {
       "inputs": {
+        "hipother": "hipother",
         "nixpkgs": "nixpkgs"
       }
     }
