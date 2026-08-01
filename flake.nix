@@ -233,8 +233,11 @@ EOF
           # validates API USAGE (signatures, argument order, flags, error
           # handling) and says nothing about AMD behaviour.
           export HIPNV_INCLUDE="${hipother}/hipnv/include"
-          export HIPNV_CFLAGS="-D__HIP_PLATFORM_NVIDIA__ -diag-suppress 1056 -I${hipother}/hipnv/include -I${hipClr}/include -I${cudaRt}/include -I${cudaProf}/include -I${cudaCccl}/include"
-          export HIPNV_LDFLAGS="-L${cudaRt}/lib -lcudart"
+          export HIPNV_CFLAGS="-D__HIP_PLATFORM_NVIDIA__ -diag-suppress 1056 -I${hipother}/hipnv/include -I${hipClr}/include -I${cudaRt}/include -I${cudaProf}/include -I${cudaCccl}/include -I${nvrtcInc}/include"
+          # -lcuda is NOT optional: hipModule* lowers to the CUDA DRIVER API
+          # (cuLaunchKernel, cuCtxDestroy_v2, ...), not the runtime API, so
+          # linking only -lcudart fails with undefined cu* symbols.
+          export HIPNV_LDFLAGS="-L${cudaRt}/lib -lcudart -L${nvrtcLib}/lib -l:libnvrtc.alt.so.12 -L/run/opengl-driver/lib -lcuda"
           export CUDART_LIB="${cudaRt}/lib"
 
           # libcuda comes from the NixOS driver; NVRTC from nixpkgs.
