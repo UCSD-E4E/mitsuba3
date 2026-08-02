@@ -323,6 +323,11 @@ EOF
           # directly -- the HIP-RT traversal test among them.
           export CUDA_INCLUDE="${cudaRt}/include"
 
+          # <nv/target>, which cuda_fp16.h includes. nvcc does not find it on
+          # its own here, so anything compiling resources/kernels.cu with nvcc
+          # (tools/hip_validate/devlib_check.sh) needs it spelled out.
+          export CUDA_CCCL_INCLUDE="${cudaCccl}/include"
+
           # NVRTC starts with an EMPTY include search list, so the CUDA shim
           # cannot reach <cuda_fp16.h> unless told where it is. Without this,
           # Float16 in generated kernels falls back to a 4-byte float and every
@@ -337,6 +342,12 @@ EOF
 
           # hipcc cannot find the device bitcode on NixOS without this.
           export HIPCC_COMPILE_FLAGS_APPEND="--rocm-device-lib-path=$HIP_DEVICE_LIB_PATH"
+
+          # nanothread's CMakeLists find_library()s libatomic, which on NixOS
+          # lives in gcc's own output rather than anywhere on the default
+          # search path -- configuring a fresh build tree fails outright
+          # without this.
+          export CMAKE_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${CMAKE_LIBRARY_PATH:+:$CMAKE_LIBRARY_PATH}"
 
           echo "drjit HIP dev shell — target $HIP_TARGET_ARCH"
           [ -x "$HIPCC" ] && echo "  hipcc   ok" || echo "  hipcc   MISSING"

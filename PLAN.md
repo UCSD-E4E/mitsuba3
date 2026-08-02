@@ -627,7 +627,10 @@ in precisely the area §7.2 flags as risky. With a single-definition parameter, 
 NVIDIA build sets 32 and exercises the reduction/ballot paths for real; only genuinely
 width-64-specific behavior then requires the MI210.
 
-Confirmed sites needing work:
+Confirmed sites needing work (the HIP counterparts of the first are **done** — see
+`hip_ts.cpp`, where the four launch-configuration constants are read from `HIPDevice`,
+and `resources/common.h`, where `WarpSize` is the parameter; the CUDA files below are
+untouched and stay at 32, which is correct for them):
 - [cuda_ts.cpp:800](ext/drjit/ext/drjit-core/src/cuda_ts.cpp#L800) — `const uint32_t warp_size = 32`, plus the 32-element grouping comments at :842 and :854.
 - [cuda_scatter.cpp](ext/drjit/ext/drjit-core/src/cuda_scatter.cpp) — the peer-aggregation path built on `activemask.b32` (:63), `shfl.sync.bfly.b32` with 31-clamps (:125-131, :157-163, :332), and `vote.sync.ballot.b32` (:171). **A 64-wide ballot does not fit a `b32`** — this needs redesign against `__ballot64` / `__lane_id()`, not mechanical substitution.
 
@@ -887,11 +890,35 @@ backend's PTX. Clang's frontend is simply slower and more aggressive.) Concretel
 
 *Milestone: `c = (a + b) * 5` correct on MI210, then the loop/call tests pass.*
 
-### Phase 3 — Device library
+### Phase 3 — Device library ✅ *(written; wave64 semantics unverified)*
 `hipcc` rule for `resources/kernels.cu` → `gfx90a` code object; wave64 audit of the
 `.cuh` sources per §3.3; embed/decompress path. Wire `block_reduce`,
 `block_prefix_reduce`, `reduce_dot`, `compress`, `block_mkperm`.
-*Milestone: reductions, scans, and compress numerically correct under wave64.*
+
+**Done.** `resources/*.cuh` was ported **in place** rather than forked, so the CUDA and
+AMD targets cannot drift. `WarpSize` is now §3.3's single-definition parameter on both
+sides, and the two idioms that hid a width behind a literal — `31 - __clz(ballot)` and
+`peers << (32 - lane)` — have named, width-correct replacements. ROCm `static_assert`s
+that ballot masks are 64-bit, so a site missed here is a compile error rather than a
+wrong answer. `resources/Makefile` builds the code object (hipcc `--genco` →
+`clang-offload-bundler --unbundle` → `pack_hip`, 1.38 MB → 168 KB); the blob is
+committed, so building drjit-core still needs no ROCm. The six `HIPThreadState` methods
+launch it, with every warp-size constant read from `HIPDevice` — four sites in the launch
+configurations where the CUDA original's literal 32 would miscompute on gfx90a.
+
+**Two independent checks that the port did not break anything**, both at width 32:
+entry-by-entry nvcc PTX comparison (638 of 646 byte-identical; the 8 that differ are the
+intended ones — 7 mkperm plus `compress_large`), and
+`tools/hip_validate/devlib_check.sh`, which rebuilds the CUDA blob from the ported
+sources and runs drjit-core's own suite against it (8/8). The normal suite cannot see the
+port at all, since drjit-core embeds the *committed* blob, which predates it.
+
+**Wave64 remains unverified** — that is the whole reason the width is a parameter and not
+a constant. The host also refuses to load the blob when the device's reported width
+differs from the one it was compiled for, so a mismatch fails loudly instead of returning
+quietly wrong reductions.
+*Milestone (outstanding): reductions, scans, and compress numerically correct under
+wave64.*
 
 ### Phase 4 — Advanced ops
 Scatter/atomics (wave64 ballot redesign), packet memory, textures.
@@ -1163,13 +1190,14 @@ rebasing against it for six months.
    behaviour still needs the card.
 1. **On MI210 arrival, re-run the unverified list first.** `run_tests.sh` names them: currently
    `smoke_half`, `smoke_literal`, `smoke_types`, `smoke_warp`, `spec_wave`. These are
-   cheap, and they are where a latent wave64 or fp16 bug will surface.
+   cheap, and they are where a latent wave64 or fp16 bug will surface. **Then the device
+   library** (`test_reductions`, `test_mem`, `test_vcall`): its wave-width rewrite is
+   verified only at 32, and its failure mode is a wrong number rather than a crash.
 2. ~~Phase 1~~ — `hip_api` (dlopen bindings, ABI-checked against real ROCm),
    `hip_core` (device enumeration) and `hip_ts` (HIPThreadState) are written. Symbol
    names and constants are verified against the installed ROCm; every ThreadState
    call SHAPE is verified by executing the same sequences through HIP-on-CUDA
-   (`hipnv_ts_calls`). What remains is Phase 3 work: the precompiled utility kernels
-   (block_reduce, compress, mkperm, aggregate) that hip_ts raises on.
+   (`hipnv_ts_calls`). Nothing raises any more — see Phase 3 below.
 3. ~~Finish Phase 2~~ — dispatch, recording and local arrays are all done, and every
    Dr.Jit-Core suite passes against HIP. What is left of Phase 2 is fp16 atomics and
    the ray-tracing opcodes, the latter belonging with the Phase 0b spike below.
@@ -1185,7 +1213,11 @@ rebasing against it for six months.
    of Metal's eight outputs (no geometry ID, no user instance ID), so §7's "adopt the
    signature verbatim" needs qualifying; and traversal costs 64 VGPR / 38 AGPR / 800 B
    scratch on gfx90a -- `hip_validate` now prints these for every kernel.
-5. Phases 3–8.
+5. ~~Phase 3~~ — the device library builds for gfx90a, is embedded, and drives all six
+   previously-raising `HIPThreadState` methods. Two width-32 checks say the port is
+   algorithmically intact (BACKEND_NOTES §11g); wave64 semantics are the milestone that
+   remains, and they are on the MI210 list with the rest.
+6. Phases 4–8.
 
 **Still unanswered, and still worth answering:** §8.0, the task-shape question. It does
 not block the work above, but it determines whether the phone fleet ends up the primary
