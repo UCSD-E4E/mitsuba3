@@ -57,6 +57,77 @@
       hipClr       = rocm.clr;                 # provides bin/hipcc
       hipDeviceLib = rocm.rocm-device-libs;    # amdgcn/bitcode, else hipcc errors
       hipRt        = rocm.hiprt;               # HIP-RT: confirmed gfx90a (§0.2)
+
+      # --- HIP-RT with the NVIDIA path enabled -------------------------------
+      #
+      # The stock package cannot target NVIDIA, which is NOT a HIP-RT
+      # limitation -- upstream supports it through Orochi. nixpkgs disables it
+      # in three independent places, and all three must be undone:
+      #
+      #   1. `FORCE_DISABLE_CUDA = true` in cmakeFlags.
+      #   2. Orochi's enable_cuew.cmake probes $CUDA_PATH and /usr/local/cuda
+      #      for a classic SDK layout. Nix has neither, so cuew is skipped with
+      #      only a warning and the host library is built with NO CUDA support
+      #      -- flipping (1) alone yields an NVIDIA device library that nothing
+      #      can load.
+      #   3. postInstall keeps the AMD bitcode only.
+      #
+      # Why bother: gfx90a has no ray-tracing hardware, so it takes HIP-RT's
+      # RTIP 0 SOFTWARE traversal path -- the same portable C++ that compiles
+      # for NVIDIA. An NVIDIA execution arm therefore runs very nearly the code
+      # the MI210 will, which is unusually good for a cross-vendor proxy. It is
+      # what moved "does traversal return correct hits" off the
+      # blocked-until-hardware list (BACKEND_NOTES §7a).
+      #
+      # This is deliberately a SEPARATE package. `hipRt` above remains the AMD
+      # build and stays the compile target; this one is exposed as
+      # $HIPRT_NV_PATH and used only by the harness's execution arm.
+      cudaSdkRoot = unfreePkgs.symlinkJoin {
+        name = "cuda-sdk-root";
+        paths = with unfreePkgs.cudaPackages; [
+          cuda_cudart cuda_nvrtc.include cuda_nvcc cuda_cccl
+          cuda_profiler_api.include
+        ];
+      };
+
+      hipRtNv = rocm.hiprt.overrideAttrs (old: {
+        pname = "hiprt-nv";
+
+        nativeBuildInputs = old.nativeBuildInputs
+          ++ [ unfreePkgs.cudaPackages.cuda_nvcc ];
+        buildInputs = old.buildInputs ++ (with unfreePkgs.cudaPackages; [
+          cuda_cudart cuda_nvrtc cuda_cccl
+        ]);
+
+        # Satisfies the SDK probe in (2) above.
+        CUDA_PATH = "${cudaSdkRoot}";
+
+        # HIP-RT drives nvcc from its own build script, so nixpkgs' usual CUDA
+        # include wiring never reaches it.
+        preBuild = ''
+          export NVCC_PREPEND_FLAGS="-I${cudaSdkRoot}/include $NVCC_PREPEND_FLAGS"
+        '';
+
+        cmakeFlags =
+          (builtins.filter
+            (f: !(nixpkgs.lib.hasInfix "FORCE_DISABLE_CUDA" (toString f)))
+            old.cmakeFlags)
+          ++ [ "-DFORCE_DISABLE_CUDA=OFF" "-DFORCE_CUDA=ON" ];
+
+        # THREE NVIDIA artifacts are needed, and missing any one fails late and
+        # unhelpfully (hiprtErrorInternal, or a file-open message only visible
+        # after hiprtSetLogLevel):
+        #   hiprt*_nv_lib.fatbin        traversal library linked into kernels
+        #   hiprt*_nv.fatbin            precompiled BVH-BUILDER kernels
+        #   oro_compiled_kernels.fatbin Orochi's parallel primitives
+        postInstall = (old.postInstall or "") + ''
+          for f in ../scripts/bitcodes/hiprt*_nv* \
+                   ../dist/bin/Release/hiprt*_nv* \
+                   ../dist/bin/Release/oro_compiled_kernels.fatbin; do
+            if [ -e "$f" ]; then install -v -Dm644 "$f" $out/lib/; fi
+          done
+        '';
+      });
       # clang-offload-bundler, for confirming a code object really carries the
       # requested target. Offload bundles are compressed, so the target string
       # is not findable by grep -- the bundler is the only reliable check.
@@ -216,6 +287,9 @@ EOF
           export HIP_PATH="${hipClr}"
           export HIP_DEVICE_LIB_PATH="${hipDeviceLib}/amdgcn/bitcode"
           export HIPRT_PATH="${hipRt}"
+          # CUDA-enabled HIP-RT, for the harness's ray-tracing EXECUTION arm
+          # only. Never the compile target -- that stays $HIPRT_PATH (gfx90a).
+          export HIPRT_NV_PATH="${hipRtNv}"
           export HIP_BUNDLER="${rocmClang}/bin/clang-offload-bundler"
           export HIP_OBJDUMP="${rocmLlvm}/bin/llvm-objdump"
           export NVRTC_INCLUDE="${nvrtcInc}/include"
@@ -239,6 +313,9 @@ EOF
           # linking only -lcudart fails with undefined cu* symbols.
           export HIPNV_LDFLAGS="-L${cudaRt}/lib -lcudart -L${nvrtcLib}/lib -l:libnvrtc.alt.so.12 -L/run/opengl-driver/lib -lcuda"
           export CUDART_LIB="${cudaRt}/lib"
+          # CUDA headers (cuda.h), for host programs that drive the driver API
+          # directly -- the HIP-RT traversal test among them.
+          export CUDA_INCLUDE="${cudaRt}/include"
 
           # NVRTC starts with an EMPTY include search list, so the CUDA shim
           # cannot reach <cuda_fp16.h> unless told where it is. Without this,

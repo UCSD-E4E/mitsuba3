@@ -10,10 +10,14 @@ arithmetic, casts, memory, control flow, atomics, reductions, dynamic dispatch,
 frozen-function recording and per-lane arrays. Dispatch is what Mitsuba plugin
 selection rests on, so nothing structural now blocks a render. Phase 1 unblocked.
 
-The Phase 0b spike is done: HIP-RT traversal compiles and LINKS
-for gfx90a, at a measured 64 VGPR / 38 AGPR / 800 B scratch, and turned up three
-findings that change §7 (BACKEND_NOTES §7a). What no longer has a local proxy at all
-is HIP-RT hit correctness and its host API — the packaged library is AMD-only.
+The Phase 0b spike is done. HIP-RT traversal links for gfx90a at a measured
+64 VGPR / 38 AGPR / 800 B scratch, and it is also EXECUTED and verified correct on the
+local NVIDIA GPU — an unusually good proxy, because gfx90a has no ray-tracing hardware
+and so takes the same RTIP 0 software path. The spike turned up three findings that
+change §7 (BACKEND_NOTES §7a-b).
+
+What genuinely has no local proxy left: wave64 semantics, fp16 numerics, and the AMD
+host API.
 
 All work so far done on an x86_64 NixOS laptop with an RTX 3060 and **no AMD
 hardware** -- §0.2 covers why that is possible, §0.3 the CUDA shim, and §3.5
@@ -1162,14 +1166,18 @@ rebasing against it for six months.
 3. ~~Finish Phase 2~~ — dispatch, recording and local arrays are all done, and every
    Dr.Jit-Core suite passes against HIP. What is left of Phase 2 is fp16 atomics and
    the ray-tracing opcodes, the latter belonging with the Phase 0b spike below.
-4. ~~Phase 0b spike~~ — HIP-RT traversal COMPILES AND LINKS for gfx90a
-   (`tools/hip_validate/kernels/spec_trace.hip`, BACKEND_NOTES §7a). Three findings
-   change the plan: every traversing kernel must define `intersectFunc`/`filterFunc`
-   or the link fails; `hiprtHit` carries only six of Metal's eight outputs (no
-   geometry ID, no user instance ID), so §7's "adopt the signature verbatim" needs
-   qualifying; and traversal costs 64 VGPR / 38 AGPR / 800 B scratch on gfx90a --
-   `hip_validate` now prints these for every kernel. Hit CORRECTNESS and the whole
-   host-side API remain unverifiable: the packaged HIP-RT is AMD-only.
+4. ~~Phase 0b spike~~ — HIP-RT traversal COMPILES AND LINKS for gfx90a, and RUNS
+   CORRECTLY on NVIDIA (`tools/hip_validate/hiprt_triangle.cpp`: BVH built on device,
+   hit at t=1.0 on the inside ray, miss on the outside one). The stock nixpkgs HIP-RT
+   cannot target NVIDIA, but that is packaging, not HIP-RT -- `flake.nix` now builds a
+   CUDA-enabled `hipRtNv` alongside it. Because gfx90a has NO ray-tracing hardware and
+   takes HIP-RT's RTIP 0 SOFTWARE path, NVIDIA runs very nearly the same code the MI210
+   will, so this is an unusually good cross-vendor proxy
+   (BACKEND_NOTES §7a-b). Three findings change the plan: every traversing kernel must
+   define `intersectFunc`/`filterFunc` or the link fails; `hiprtHit` carries only six
+   of Metal's eight outputs (no geometry ID, no user instance ID), so §7's "adopt the
+   signature verbatim" needs qualifying; and traversal costs 64 VGPR / 38 AGPR / 800 B
+   scratch on gfx90a -- `hip_validate` now prints these for every kernel.
 5. Phases 3–8.
 
 **Still unanswered, and still worth answering:** §8.0, the task-shape question. It does
