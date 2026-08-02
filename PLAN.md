@@ -4,12 +4,16 @@
 **Consumer:** the fishsense pipeline running **Mitsuba 3 in a spectral variant** on MI210.
 **Deliverable:** a working `hip_ad_spectral` (and `hip_ad_rgb`) Mitsuba variant.
 
-**Status:** Phase 0a complete. **Phase 2 codegen complete for everything except ray
-tracing: every Dr.Jit-Core test suite in the tree now passes against HIP** —
+**Status:** Phase 0a complete. **Phase 2 codegen complete except for the ray-tracing
+opcodes: every Dr.Jit-Core test suite in the tree now passes against HIP** —
 arithmetic, casts, memory, control flow, atomics, reductions, dynamic dispatch,
 frozen-function recording and per-lane arrays. Dispatch is what Mitsuba plugin
-selection rests on, so nothing structural now blocks a render. Phase 1 unblocked; the
-largest remaining unknown is the HIP-RT traversal (Phase 0b, §10).
+selection rests on, so nothing structural now blocks a render. Phase 1 unblocked.
+
+The Phase 0b spike is done: HIP-RT traversal compiles and LINKS
+for gfx90a, at a measured 64 VGPR / 38 AGPR / 800 B scratch, and turned up three
+findings that change §7 (BACKEND_NOTES §7a). What no longer has a local proxy at all
+is HIP-RT hit correctness and its host API — the packaged library is AMD-only.
 
 All work so far done on an x86_64 NixOS laptop with an RTX 3060 and **no AMD
 hardware** -- §0.2 covers why that is possible, §0.3 the CUDA shim, and §3.5
@@ -1158,7 +1162,14 @@ rebasing against it for six months.
 3. ~~Finish Phase 2~~ — dispatch, recording and local arrays are all done, and every
    Dr.Jit-Core suite passes against HIP. What is left of Phase 2 is fp16 atomics and
    the ray-tracing opcodes, the latter belonging with the Phase 0b spike below.
-4. **Phase 0b spike** — the HIP-RT traversal, as `tests/hip_triangle.cpp`.
+4. ~~Phase 0b spike~~ — HIP-RT traversal COMPILES AND LINKS for gfx90a
+   (`tools/hip_validate/kernels/spec_trace.hip`, BACKEND_NOTES §7a). Three findings
+   change the plan: every traversing kernel must define `intersectFunc`/`filterFunc`
+   or the link fails; `hiprtHit` carries only six of Metal's eight outputs (no
+   geometry ID, no user instance ID), so §7's "adopt the signature verbatim" needs
+   qualifying; and traversal costs 64 VGPR / 38 AGPR / 800 B scratch on gfx90a --
+   `hip_validate` now prints these for every kernel. Hit CORRECTNESS and the whole
+   host-side API remain unverifiable: the packaged HIP-RT is AMD-only.
 5. Phases 3–8.
 
 **Still unanswered, and still worth answering:** §8.0, the task-shape question. It does
