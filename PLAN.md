@@ -6,10 +6,11 @@
 
 **Status:** Phase 0a complete. **Phase 2 codegen substantially complete and verified
 end to end**: the emitter runs the upstream Dr.Jit-Core suites, with `test_basics`,
-`test_loop`, `test_mem` and `test_reductions` all green on HIP (arithmetic, casts,
-memory, control flow, atomics and reductions). Three subsystems remain — local arrays,
-frozen-function recording, and the call machinery — each named and skipped rather than
-silently absent (§5.9). Phase 1 unblocked.
+`test_loop`, `test_mem`, `test_reductions` and `test_vcall` all green on HIP —
+arithmetic, casts, memory, control flow, atomics, reductions, and dynamic dispatch
+(the last being what Mitsuba plugin dispatch rests on). Two subsystems remain — local
+arrays and frozen-function recording — each named and skipped rather than silently
+absent (§5.9). Phase 1 unblocked.
 
 All work so far done on an x86_64 NixOS laptop with an RTX 3060 and **no AMD
 hardware** -- §0.2 covers why that is possible, §0.3 the CUDA shim, and §3.5
@@ -811,9 +812,9 @@ Port `cuda_api` → `hip_api`, `cuda_core` → `hip_core`, minimal `hip_ts`.
 > | `test_loop` | 9/9 | symbolic loops — **control flow is verified** |
 > | `test_mem` | 17/17 | gather/scatter, masking, atomics |
 > | `test_reductions` | 14/14 | block reduce / prefix reduce / compress |
+> | `test_vcall` | 14/14 | dynamic dispatch, recursion, side effects |
 > | `test_array` | — | `VarKind::Array` not implemented |
 > | `test_record` | — | frozen-function recording not implemented |
-> | `test_vcall` | — | call machinery not implemented |
 >
 > Registering them was worth more than any bespoke test: it found nine emitter
 > bugs and six wiring bugs, most of which compiled and ran while computing the
@@ -836,8 +837,8 @@ Port `cuda_api` → `hip_api`, `cuda_core` → `hip_core`, minimal `hip_ts`.
 > output. Self-checking via `--expect-zero`, and every one is proven to compile for
 > real `gfx90a` **and** compute correctly. 16 passed / 0 failed.
 >
-> **Remaining in Phase 2:** local arrays, frozen-function recording, the call
-> machinery, and half-precision atomics (no 16-bit `atomicCAS`; needs the packed
+> **Remaining in Phase 2:** local arrays, frozen-function recording, and
+> half-precision atomics (no 16-bit `atomicCAS`; needs the packed
 > `f16x2` treatment the CUDA backend uses). Warp pre-aggregation for scatter-reduce
 > and `ScatterInc` is deferred as a contention optimisation, not a correctness gap.
 >
@@ -1153,10 +1154,10 @@ rebasing against it for six months.
    cheap, and they are where a latent wave64 or fp16 bug will surface.
 2. **Phase 1** — `hip_api` / `hip_core` / `hip_ts`, the mechanical `cu*` → `hip*` port.
    Low risk, but unverifiable until now.
-3. **Finish Phase 2** — the call machinery first (Mitsuba's plugin dispatch rests on
-   it, so nothing renders without it), then local arrays, then frozen-function
-   recording. Each is currently a named skip in `tests/test.cpp`; delete the entry and
-   the suite says what is left.
+3. **Finish Phase 2** — local arrays, then frozen-function recording. Both are
+   named skips in `tests/test.cpp`; delete the entry and the suite says what is left.
+   (Dynamic dispatch is done — `test_vcall` 14/14 — so Mitsuba plugin dispatch, the
+   hard blocker for rendering anything, is no longer one.)
 4. **Phase 0b spike** — the HIP-RT traversal, as `tests/hip_triangle.cpp`.
 5. Phases 3–8.
 
