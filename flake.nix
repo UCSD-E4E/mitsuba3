@@ -286,6 +286,12 @@ EOF
           export HIPCC="${hipClr}/bin/hipcc"
           export HIP_PATH="${hipClr}"
           export HIP_DEVICE_LIB_PATH="${hipDeviceLib}/amdgcn/bitcode"
+          # ROCm headers, so tests/hip_api_abi.cpp can cross-check our HIP
+          # constants against the real hip_runtime_api.h enumerators.
+          export ROCM_INCLUDE_PATH="${hipClr}/include"
+          # The HIP runtime itself. jitc_hip_api_init() honours this, and the
+          # ABI test dlopens it -- neither needs an AMD GPU to be present.
+          export DRJIT_LIBHIP_PATH="${hipClr}/lib/libamdhip64.so"
           export HIPRT_PATH="${hipRt}"
           # CUDA-enabled HIP-RT, for the harness's ray-tracing EXECUTION arm
           # only. Never the compile target -- that stays $HIPRT_PATH (gfx90a).
