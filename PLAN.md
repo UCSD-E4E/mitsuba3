@@ -8,7 +8,9 @@
 opcodes: every Dr.Jit-Core test suite in the tree now passes against HIP** —
 arithmetic, casts, memory, control flow, atomics, reductions, dynamic dispatch,
 frozen-function recording and per-lane arrays. Dispatch is what Mitsuba plugin
-selection rests on, so nothing structural now blocks a render. Phase 1 unblocked.
+selection rests on, so nothing structural now blocks a render. Phase 1 is now WRITTEN: dlopen bindings checked against a real ROCm install, device
+enumeration, and a HIPThreadState whose every call shape is verified by executing the
+same sequences through HIP-on-CUDA.
 
 The Phase 0b spike is done. HIP-RT traversal links for gfx90a at a measured
 64 VGPR / 38 AGPR / 800 B scratch, and it is also EXECUTED and verified correct on the
@@ -17,7 +19,8 @@ and so takes the same RTIP 0 software path. The spike turned up three findings t
 change §7 (BACKEND_NOTES §7a-b).
 
 What genuinely has no local proxy left: wave64 semantics, fp16 numerics, and the AMD
-host API.
+runtime's actual behaviour — the HIP calls are shape-checked through HIP-on-CUDA, but
+nothing AMD-specific about them is.
 
 All work so far done on an x86_64 NixOS laptop with an RTX 3060 and **no AMD
 hardware** -- §0.2 covers why that is possible, §0.3 the CUDA shim, and §3.5
@@ -1161,8 +1164,12 @@ rebasing against it for six months.
 1. **On MI210 arrival, re-run the unverified list first.** `run_tests.sh` names them: currently
    `smoke_half`, `smoke_literal`, `smoke_types`, `smoke_warp`, `spec_wave`. These are
    cheap, and they are where a latent wave64 or fp16 bug will surface.
-2. **Phase 1** — `hip_api` / `hip_core` / `hip_ts`, the mechanical `cu*` → `hip*` port.
-   Low risk, but unverifiable until now.
+2. ~~Phase 1~~ — `hip_api` (dlopen bindings, ABI-checked against real ROCm),
+   `hip_core` (device enumeration) and `hip_ts` (HIPThreadState) are written. Symbol
+   names and constants are verified against the installed ROCm; every ThreadState
+   call SHAPE is verified by executing the same sequences through HIP-on-CUDA
+   (`hipnv_ts_calls`). What remains is Phase 3 work: the precompiled utility kernels
+   (block_reduce, compress, mkperm, aggregate) that hip_ts raises on.
 3. ~~Finish Phase 2~~ — dispatch, recording and local arrays are all done, and every
    Dr.Jit-Core suite passes against HIP. What is left of Phase 2 is fp16 atomics and
    the ray-tracing opcodes, the latter belonging with the Phase 0b spike below.
