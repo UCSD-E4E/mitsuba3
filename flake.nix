@@ -240,6 +240,13 @@ EOF
           export HIPNV_LDFLAGS="-L${cudaRt}/lib -lcudart -L${nvrtcLib}/lib -l:libnvrtc.alt.so.12 -L/run/opengl-driver/lib -lcuda"
           export CUDART_LIB="${cudaRt}/lib"
 
+          # NVRTC starts with an EMPTY include search list, so the CUDA shim
+          # cannot reach <cuda_fp16.h> unless told where it is. Without this,
+          # Float16 in generated kernels falls back to a 4-byte float and every
+          # load from a half buffer reads the wrong element (§3.5). Read by
+          # jitc_hip_compile() in src/hip_core.cpp.
+          export DRJIT_HIP_SHIM_CUDA_INCLUDE="${cudaRt}/include"
+
           # libcuda comes from the NixOS driver; NVRTC from nixpkgs.
           # llvmLib too: drjit-core dlopens libLLVM for the LLVM backend, and its
           # test suite runs from this shell.

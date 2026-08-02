@@ -4,9 +4,15 @@
 **Consumer:** the fishsense pipeline running **Mitsuba 3 in a spectral variant** on MI210.
 **Deliverable:** a working `hip_ad_spectral` (and `hip_ad_rgb`) Mitsuba variant.
 
-**Status:** Phase 0a complete; Phase 2 foundations complete and specified; Phase 1
-unblocked. All work so far done on an x86_64 NixOS laptop with an RTX 3060 and **no
-AMD hardware** -- §0.2 covers why that is possible, §0.3 the CUDA shim, and §3.5
+**Status:** Phase 0a complete. **Phase 2 codegen substantially complete and verified
+end to end**: the emitter runs the upstream Dr.Jit-Core suites, with `test_basics`,
+`test_loop`, `test_mem` and `test_reductions` all green on HIP (arithmetic, casts,
+memory, control flow, atomics and reductions). Three subsystems remain — local arrays,
+frozen-function recording, and the call machinery — each named and skipped rather than
+silently absent (§5.9). Phase 1 unblocked.
+
+All work so far done on an x86_64 NixOS laptop with an RTX 3060 and **no AMD
+hardware** -- §0.2 covers why that is possible, §0.3 the CUDA shim, and §3.5
 HIP-on-CUDA, which runs the real HIP API locally. What genuinely still needs the
 MI210 is AMD-specific behaviour: wave64 semantics, fp16 numerics, and HIP-RT (§10).
 
@@ -788,7 +794,33 @@ Port `cuda_api` → `hip_api`, `cuda_core` → `hip_core`, minimal `hip_ts`.
 
 ### Phase 2 — Codegen (the big one)
 
-> **⏳ IN PROGRESS.** Everything that could be built without hardware has been.
+> **⏳ IN PROGRESS — the emitter works and is verified against the upstream suites.**
+>
+> **Done — the emitter.** `jitc_hip_render()` and `jitc_hip_assemble()` cover
+> arithmetic, comparisons, select, casts and bitcasts, transcendentals, bit
+> counting, wide multiply, gather/scatter, scatter-reduce, the returning atomics
+> (`ScatterInc` / `ScatterExch` / `ScatterCAS`), and control flow (symbolic loops
+> and `if`).
+>
+> **Done — real coverage.** HIP is registered with the `TEST_*` macros in
+> `tests/test.h`, so the upstream suites run against it:
+>
+> | suite | HIP | covers |
+> |---|---|---|
+> | `test_basics` | 7/7 | the full op matrix vs. constant folding, all types |
+> | `test_loop` | 9/9 | symbolic loops — **control flow is verified** |
+> | `test_mem` | 17/17 | gather/scatter, masking, atomics |
+> | `test_reductions` | 14/14 | block reduce / prefix reduce / compress |
+> | `test_array` | — | `VarKind::Array` not implemented |
+> | `test_record` | — | frozen-function recording not implemented |
+> | `test_vcall` | — | call machinery not implemented |
+>
+> Registering them was worth more than any bespoke test: it found nine emitter
+> bugs and six wiring bugs, most of which compiled and ran while computing the
+> wrong thing (BACKEND_NOTES §11f). Two classes are worth carrying forward — a
+> `JitBackend` packed into a 2-bit field truncates HIP silently (now guarded by
+> `tests/hip_packing.cpp`), and under the shim every allocate/launch/**sync**
+> site must treat HIP as CUDA-backed.
 >
 > **Done — pure components, each test-first with a contract test:**
 > | Component | Source | Test |
@@ -802,12 +834,12 @@ Port `cuda_api` → `hip_api`, `cuda_core` → `hip_core`, minimal `hip_ts`.
 > the source the emitter must produce for ~45 VarKinds (arithmetic, compare/select,
 > bitwise, casts, transcendentals, memory, wave ops, wide multiply), shaped as machine
 > output. Self-checking via `--expect-zero`, and every one is proven to compile for
-> real `gfx90a` **and** compute correctly. 15 passed / 0 failed.
+> real `gfx90a` **and** compute correctly. 16 passed / 0 failed.
 >
-> **Blocked — the emitter itself.** `jitc_hip_render()` and the variable loop take
-> `Variable*` / `ScheduledGroup`; reaching them needs `jit_malloc`, a ThreadState and
-> scheduling, i.e. most of Phase 1 (BACKEND_NOTES §11 "Known limit"). A codegen-only
-> mode was considered and rejected as too invasive.
+> **Remaining in Phase 2:** local arrays, frozen-function recording, the call
+> machinery, and half-precision atomics (no 16-bit `atomicCAS`; needs the packed
+> `f16x2` treatment the CUDA backend uses). Warp pre-aggregation for scatter-reduce
+> and `ScatterInc` is deferred as a contention optimisation, not a correctness gap.
 >
 > **Constraints discovered, binding on the emitter** — full detail in BACKEND_NOTES
 > §11a/§11c, summarised here because each one compiles cleanly and is still wrong:
@@ -1104,9 +1136,13 @@ rebasing against it for six months.
 3. ~~Phase 0a wiring~~ — backend registered but inert, locked by `tests/hip_wiring.cpp`.
 4. ~~Stand up the dual-validation harness~~ — `tools/hip_validate`, both arms working.
 5. ~~Phase 2 pure components~~ — types, literals, prologue, reindent; all test-first.
-6. ~~Opcode specification~~ — `spec_*.hip` for ~45 VarKinds, self-checking, 15/15 green.
+6. ~~Opcode specification~~ — `spec_*.hip` for ~45 VarKinds, self-checking, 16/16 green.
 7. ~~Wave64-unverified list~~ — now emitted by `run_tests.sh` on every run rather than
    kept in prose.
+8. ~~Phase 2 emitter~~ — `jitc_hip_render()` and the variable loop, verified by the
+   upstream suites rather than a bespoke test. `tests/hip_codegen.cpp`'s `WILL_FAIL`
+   tripwire fired and was removed; it is now a regression guard.
+9. ~~Control flow~~ — `test_loop` passes 9/9. It had been written-but-unexercised.
 
 **⏳ Remaining — most of it now doable locally after all (§3.5):**
 0. **Phase 1 is UNBLOCKED.** HIP-on-CUDA runs the real HIP API on the 3060, so
@@ -1117,9 +1153,10 @@ rebasing against it for six months.
    cheap, and they are where a latent wave64 or fp16 bug will surface.
 2. **Phase 1** — `hip_api` / `hip_core` / `hip_ts`, the mechanical `cu*` → `hip*` port.
    Low risk, but unverifiable until now.
-3. **Phase 2 emitter** — `jitc_hip_render()` and the variable loop, against the
-   `spec_*.hip` specification. `tests/hip_codegen.cpp` is the acceptance gate; delete its
-   `WILL_FAIL` when it starts passing.
+3. **Finish Phase 2** — the call machinery first (Mitsuba's plugin dispatch rests on
+   it, so nothing renders without it), then local arrays, then frozen-function
+   recording. Each is currently a named skip in `tests/test.cpp`; delete the entry and
+   the suite says what is left.
 4. **Phase 0b spike** — the HIP-RT traversal, as `tests/hip_triangle.cpp`.
 5. Phases 3–8.
 
