@@ -279,8 +279,12 @@ EOF
         # rocmClang is on PATH, not just referenced by absolute path:
         # clang-offload-bundler shells out to llvm-objcopy and fails with
         # "unable to find 'llvm-objcopy' in path" otherwise.
+        # pythonEnv from Phase 6 onward: drjit.hip / drjit.hip.ad are Python
+        # namespaces, and the milestone is Dr.Jit's own pytest suite running
+        # against them. Everything before Phase 6 was C++ only, which is why
+        # this shell had no interpreter.
         nativeBuildInputs = (with unfreePkgs; [ cmake ninja git ])
-          ++ [ rocmClang rocmLlvm nvcc ];
+          ++ [ rocmClang rocmLlvm nvcc pythonEnv ];
 
         shellHook = ''
           export HIPCC="${hipClr}/bin/hipcc"

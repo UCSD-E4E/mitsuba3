@@ -1015,6 +1015,88 @@ up means passing the geometry and ray types through to `hiprtBuildTraceKernels()
 `DRJIT_TRAVERSE` handle pattern in
 [accel_native.h](include/mitsuba/render/accel_native.h). Small, but it will otherwise
 surface as mystery failures later.
+
+**"Small, but it will otherwise surface as mystery failures later" was right, and
+understated.** The namespaces, `IsHIP`/`is_hip_v` traits and `HIPArray`/`HIPDiffArray`
+aliases are mechanical. What was not: **every** bug in this phase was silent.
+
+`drjit.hip` came out empty, and that one symptom had *two* independent causes, either
+sufficient on its own — `detail::backend<T>` had no HIP specialisation (so
+`backend_v<HIPArray<float>>` was `None` and every type was filed under `drjit.scalar`),
+and `ArrayMeta::backend` was a 2-bit field (so `HIP == 4` truncated to 0). Fixing either
+alone leaves the symptom unchanged.
+
+That is the **third** packed backend field found one bit too narrow, after
+`Variable::backend` and `AllocInfo`; it now carries a `static_assert` against
+`JitBackend::Count`. Widening it pushed `ArrayMeta` from 8 to 12 bytes — neither
+neighbour could spare a bit — which in turn broke `operator==`'s whole-struct `memcmp`
+and `meta_get_type()`'s `uint64_t` cache key. Both now share a `meta_identity()` helper,
+which is *more* correct than what it replaced: the new second word is nearly all padding,
+and padding is indeterminate.
+
+**Thirteen per-backend chains in shipped code omitted HIP** in this phase alone, plus six
+more in the test suite. The instructive one is `dlpack.cpp`: HIP fell through to *host*,
+so a device pointer would have been handed out labelled CPU — a segfault in the consumer's
+process, not ours. Those now go through `is_device_backend()` in `src/python/common.h`.
+
+Two of them are worth naming because they fail in ways that mislead. `Resampler` was
+missing HIP at *four* layers at once, one of which was a `-DDRJIT_ENABLE_HIP` that
+`src/extra/CMakeLists.txt` re-derives per target — so the instantiations were correct,
+looked correct, and were compiled out, surfacing as an `undefined symbol` for a template
+you can watch being instantiated. And `jitc_coop_vec_supported()` defaulted to **yes**,
+so an unimplemented feature reached `jitc_fail()`, which *aborts* — killing the entire
+pytest process rather than reporting one skip. A capability table whose fallthrough is
+"supported" is a trap for every backend added after it was written.
+
+**The most expensive bug was not a codegen bug at all.** A `Warn`-level log in the shim's
+`jit_hip_init()` deadlocked the interpreter at exit: `jit_init_async` runs backend init on
+a background thread holding `state.lock`, Warn reaches the Python log callback, which
+takes the GIL, and the main thread holds the GIL waiting on `state.lock`. Everything
+worked and printed correct results; the process just never terminated. Backend init must
+log at `Info`. See BACKEND_NOTES §11k.
+
+`@dr.freeze` needed no work. A test asserting "traces once, then replays" reported four
+traces on HIP — and four on CUDA and LLVM. The expectation was wrong, not the backend.
+**Compare against a reference backend rather than an absolute**, or the next person hunts
+a HIP bug that does not exist.
+
+**For Phase 7, grep before building.** `JitBackend::CUDA`, `is_cuda_v`, `MI_ENABLE_CUDA`,
+`backend == `. The sites that mean "this is a GPU" rather than "this is CUDA
+specifically" are the ones that will be wrong, and none of them will say so.
+
+**Status: met.** Dr.Jit's suite is green on `hip` / `hip.ad` — ~19,000 passing across all
+44 test files, parameterised over HIP, HIP.ad, CUDA, CUDA.ad, LLVM, LLVM.ad and scalar,
+with CUDA and LLVM unregressed by the `ArrayMeta` widening.
+
+**The last crash was ours, and the investigation nearly recorded it as upstream's.**
+`test_freeze.py::test72_no_input[llvm]` segfaulted in `__dynamic_cast`. It reproduced with
+HIP switched off, which looked like proof it was not us — but "HIP off" is not "our
+changes off", and the Phase 1–5 drjit-core commits were still in that build. Building the
+actual upstream merge-base (`9a7db92b`, submodule `7a9ab1fa`) was the test that settled
+it: 744 passed, no crash. **A control has to differ in exactly the variable you are
+testing.** See BACKEND_NOTES §11l for the bug itself — a refactor of mine that flattened
+a per-backend if/else chain and, in doing so, silently reversed a load-bearing ordering.
+
+Run the suite per-file, not as one `pytest tests/`: a native crash aborts the whole run,
+so a segfault at 22% tells you nothing about the other 78% — and it hid two *further*
+crashes behind it here. `scratchpad/suite_perfile.sh` reports `CRASH rc=139` per file and
+keeps going.
+
+**And a skipped test is not a passing one.** The suite read green while 497 tests never
+ran: the seven C++ extension suites need `DRJIT_ENABLE_TESTS=ON` (off by default), a
+`DRJIT_ENABLE_HIP` define that `tests/CMakeLists.txt` did not pass, and a `get_pkg()`
+that did not stop at Metal — three independent reasons, each sufficient, and all of them
+printing as `s`. (Four reasons, in the end — an eighth `get_pkg()` copy lived in
+`test_freeze.py`, which is not an `_ext` file and so was not on the list.)
+
+They now run and pass on HIP, and that is the most useful result in this phase for
+Phase 7: `call_ext` is the C++ side of vcall dispatch, and unlocking it also unlocked
+~120 tests in `test_freeze.py`, among them the whole frozen-vcall set. **HIP vcall
+dispatch demonstrably works end to end** — §9a-c's risk area, previously untested.
+
+Run the sweep from `build-hip/tests`, where the extension `.so`s live, and re-run cmake
+after editing `tests/*.py` (they are copied at configure time). See BACKEND_NOTES §11m.
+
 *Milestone: Dr.Jit's own test suite green on `hip` / `hip.ad`.*
 
 ### Phase 7 — Mitsuba layer (Layer C)
