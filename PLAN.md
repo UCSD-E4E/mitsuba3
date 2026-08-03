@@ -959,7 +959,7 @@ CUDA is `ReduceMode::Local`, which this backend does not implement. The emitter 
 the case anyway, so adding the arm is a one-line change when Local lands. This is the
 second per-backend if/else chain in shared code found to omit HIP silently (§9).
 
-### Phase 5 — Ray tracing ✅ *(emitted and gfx90a-linked; execution pending)*
+### Phase 5 — Ray tracing ✅ *(emitted, gfx90a-linked, and executed)*
 Implement `jit_hip_ray_trace` + `HIPScene` per §3.2, mirroring the Metal pair. Host-side
 BVH build via the HIP-RT API; scene handle bound as a kernel parameter. Replace the
 `jitc_cuda_render_trace` role
@@ -981,21 +981,32 @@ is what makes Layer C cheap.
 travelling in the parameter block, so there is no resource-handle reconstruction, no
 per-launch residency list and no retained intersection-function library.
 
-**Validation without execution.** The generated kernel includes
-`<hiprt/hiprt_device.h>`, which the shim's NVRTC cannot find, so a traced graph cannot be
-evaluated here. Instead `tests/hip_trace.cpp` captures the *real* emitted source through
-the `PrintIR` log callback, asserts its structure (both HIP-RT hook definitions, any-hit
-versus closest-hit, the five hit fields, the two table lookups), and `run_tests.sh`
-compiles it for real gfx90a **with HIP-RT linked** — 64 VGPR / 38 AGPR / 784 B scratch,
-within noise of §7a's hand-written traversal. That link is the check that matters: HIP-RT
-declares `intersectFunc`/`filterFunc` and leaves the definitions to us, so omitting them
-compiles everywhere and fails only at link time on hardware we do not have.
+**And it executes, here.** `jitc_hip_compile()` routes any kernel containing the HIP-RT
+include through `hiprtBuildTraceKernels()` rather than bare NVRTC — that call compiles
+*and links* the traversal library, and on NVIDIA it drives NVRTC underneath.
+`tests/hip_trace_exec.cpp` builds a real BVH and scene, traces through
+`jit_hip_ray_trace()`, and checks the results: 32 lanes inside a triangle hit at
+t = 1.0, 32 outside miss, and `geometry_id` arrives from the instance-indexed table.
+Traversal correctness is no longer owed to the MI210 — gfx90a has no RT hardware, so it
+takes the same RTIP 0 software path NVIDIA just ran (§7b).
 
-*Remaining:* custom-primitive dispatch through `hiprtFuncTable` (a scene built with one
-currently emits an `#error` rather than silently reporting every custom shape as a miss),
-and executing a traced kernel — which needs the shim to link the HIP-RT device library,
-the way `hiprt_triangle.cpp` already does on NVIDIA (§7b).
-*Milestone (outstanding): `drjit-core` RT tests pass on MI210.*
+Codegen is also checked two other ways: `tests/hip_trace.cpp` captures the *real* emitted
+source through the `PrintIR` log callback and asserts its structure, and `run_tests.sh`
+compiles that for real gfx90a — 64 VGPR / 38 AGPR / 784 B scratch, within noise of §7a's
+hand-written traversal.
+
+**§7a finding 3 was corrected in the process,** and it matters for anyone reading it:
+who defines `intersectFunc`/`filterFunc` depends on how HIP-RT is linked. Hand-linking
+the bitcode (what `hip_validate` does) requires the application to supply them;
+`hiprtBuildTraceKernels()` — what the backend uses, shim and hardware alike — generates
+them and rejects a duplicate. Emitting stubs, as §7a concluded, breaks the backend. The
+general lesson: §7a's observations were made through the harness's link path, which is
+not the backend's.
+
+*Remaining:* custom-primitive dispatch through `hiprtFuncTable`. A scene built with one
+raises at codegen rather than silently reporting every custom shape as a miss; wiring it
+up means passing the geometry and ray types through to `hiprtBuildTraceKernels()`.
+*Milestone (outstanding): `drjit-core` RT tests pass on MI210 — i.e. at wave64.*
 
 ### Phase 6 — Dr.Jit layer (Layer B)
 `drjit.hip` / `drjit.hip.ad` namespaces; `is_hip_v` traits. Verify `@dr.freeze` works —
