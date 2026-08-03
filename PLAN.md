@@ -920,15 +920,44 @@ quietly wrong reductions.
 *Milestone (outstanding): reductions, scans, and compress numerically correct under
 wave64.*
 
-### Phase 4 — Advanced ops
+### Phase 4 — Advanced ops ✅ *(bar fp16 atomics)*
 Scatter/atomics (wave64 ballot redesign), packet memory, textures.
 
-**Textures are more deferrable than they look.**
-[texture.h:77](ext/drjit/include/drjit/texture.h#L77) documents `use_accel = false`,
-where GPU backends **emulate** filtered lookups in software. Mitsuba leans on
-`dr::Texture` heavily (envmap, bitmap, grid volume, sdfgrid, curves), so ship the
-software path first for correctness, then decide whether `hipTextureObject_t` is worth
-it. This removes textures from the critical path.
+**Two of the three turned out not to be work at all.**
+
+**Textures need nothing.** [texture.h:43](ext/drjit/include/drjit/texture.h#L43) gates
+every hardware path on `HasGPUTexture = (IsHalf || IsSingle || IsUInt8) && (IsCUDA ||
+IsMetal)`. A HIP array is neither, so every `if constexpr (HasGPUTexture)` branch
+compiles out and `dr::Texture` takes its software path automatically. `TexLookup`,
+`TexFetchBilerp` and `TexWrite` are never emitted for this backend, and Phases 6–7 are
+not blocked on them. **When Layer B adds `is_hip_v`, do not add `IsHIP` to that
+disjunction** — it would switch on a `jit_hip_tex_*` path that does not exist. Note also
+that CUDA's texture units resolve sub-texel position with only 8 fractional bits, so the
+software path is *more* accurate, merely slower.
+
+**Scatter aggregation is not a correctness gap.** §3.3 flags `cuda_scatter.cpp`'s peer
+aggregation as needing a 64-wide ballot redesign. It does — but only if we want it. The
+HIP backend issues plain per-lane atomics, which are always correct and merely slower
+under contention. There is no wave64 ballot to redesign because there is no ballot, so
+this is a performance task for after the backend is correct.
+
+**Packet memory** is implemented, and needs none of the wide-vector machinery Metal and
+CUDA carry: LLVM merges the element-wise form into the same `global_load_dwordx4` an
+explicit `float4` produces, measured on gfx90a. `BoundsCheck` (debug mode) is implemented
+too — it was the one gap that would have made the mode you bring a backend up in the one
+mode that could not run.
+
+*Remaining:* fp16 atomics (packed `f16x2`). `render_scatter_reduce` fails on Float16 —
+there is no 16-bit `atomicCAS`, so there is no correct lowering — and
+`jitc_can_scatter_reduce()` now **reports that**, where before it inherited a generic
+"yes" and aborted halfway through codegen. No variant we target reaches it.
+
+*Also found, and deliberately left:* `op.cpp`'s `use_packet_op` selection has arms for
+LLVM, CUDA and Metal and none for HIP, so a packet scatter-**reduce** decomposes into
+scalar ones. Correct, and costs nothing today: what makes the packet form worth having on
+CUDA is `ReduceMode::Local`, which this backend does not implement. The emitter handles
+the case anyway, so adding the arm is a one-line change when Local lands. This is the
+second per-backend if/else chain in shared code found to omit HIP silently (§9).
 
 ### Phase 5 — Ray tracing
 Implement `jit_hip_ray_trace` + `HIPScene` per §3.2, mirroring the Metal pair. Host-side
