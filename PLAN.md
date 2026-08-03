@@ -959,7 +959,7 @@ CUDA is `ReduceMode::Local`, which this backend does not implement. The emitter 
 the case anyway, so adding the arm is a one-line change when Local lands. This is the
 second per-backend if/else chain in shared code found to omit HIP silently (§9).
 
-### Phase 5 — Ray tracing
+### Phase 5 — Ray tracing ✅ *(emitted and gfx90a-linked; execution pending)*
 Implement `jit_hip_ray_trace` + `HIPScene` per §3.2, mirroring the Metal pair. Host-side
 BVH build via the HIP-RT API; scene handle bound as a kernel parameter. Replace the
 `jitc_cuda_render_trace` role
@@ -967,7 +967,35 @@ BVH build via the HIP-RT API; scene handle bound as a kernel parameter. Replace 
 HIP-RT traversal — no raygen entry, no SBT, no callables. Custom intersection functions
 for Mitsuba's implicit shapes go through `hiprtFuncTable`, mirroring
 `MetalScene::intersection_fns`.
-*Milestone: `drjit-core` RT tests pass on MI210.*
+
+**Done, and the signature is Metal's verbatim after all.** §7a warned that
+`hiprtHit` carries six of Metal's eight outputs, so "adopt the signature verbatim"
+might need qualifying. It did not: `geometry_id` and `user_instance_id` come from device
+tables indexed by the hit's instance ID, which is *exact* rather than a workaround —
+a HIP-RT instance references exactly one geometry, so both really are properties of the
+instance. Metal needs per-hit fields because its acceleration structures nest geometries
+inside an instance. So `jit_hip_ray_trace` is byte-for-byte `jit_metal_ray_trace`, which
+is what makes Layer C cheap.
+
+`HIPScene` is much smaller than `MetalScene`: a `hiprtScene` is a plain device pointer
+travelling in the parameter block, so there is no resource-handle reconstruction, no
+per-launch residency list and no retained intersection-function library.
+
+**Validation without execution.** The generated kernel includes
+`<hiprt/hiprt_device.h>`, which the shim's NVRTC cannot find, so a traced graph cannot be
+evaluated here. Instead `tests/hip_trace.cpp` captures the *real* emitted source through
+the `PrintIR` log callback, asserts its structure (both HIP-RT hook definitions, any-hit
+versus closest-hit, the five hit fields, the two table lookups), and `run_tests.sh`
+compiles it for real gfx90a **with HIP-RT linked** — 64 VGPR / 38 AGPR / 784 B scratch,
+within noise of §7a's hand-written traversal. That link is the check that matters: HIP-RT
+declares `intersectFunc`/`filterFunc` and leaves the definitions to us, so omitting them
+compiles everywhere and fails only at link time on hardware we do not have.
+
+*Remaining:* custom-primitive dispatch through `hiprtFuncTable` (a scene built with one
+currently emits an `#error` rather than silently reporting every custom shape as a miss),
+and executing a traced kernel — which needs the shim to link the HIP-RT device library,
+the way `hiprt_triangle.cpp` already does on NVIDIA (§7b).
+*Milestone (outstanding): `drjit-core` RT tests pass on MI210.*
 
 ### Phase 6 — Dr.Jit layer (Layer B)
 `drjit.hip` / `drjit.hip.ad` namespaces; `is_hip_v` traits. Verify `@dr.freeze` works —
