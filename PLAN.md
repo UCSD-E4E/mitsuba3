@@ -1139,12 +1139,32 @@ runs on HIP automatically.
 > type, which is always false and unreachable on GPU variants — dead, deliberately left
 > alone rather than perturbing numerics for no gain.
 >
-> **Not done.** Custom/implicit geometry — sphere, disk, cylinder, sdfgrid, ellipsoids —
-> needs `hiprtFuncTable` intersection callbacks. `build_hip_accel()` **throws** rather
-> than building AABB geometry against a null func table, which would traverse to the stub
-> and report no hit, rendering every such shape as invisible. Curves likewise. And
-> `test_mesh.py::test14` aborts when run after its file-mates but passes in isolation —
-> a state-dependent crash of the same shape as Phase 6's `test72`, not yet diagnosed.
+> **Two things remain, and they are independent.**
+>
+> **1. Custom/implicit geometry** — sphere, disk, cylinder, sdfgrid, ellipsoids, plus
+> curves — needs `hiprtFuncTable` intersection callbacks. `build_hip_accel()` **throws**
+> rather than building AABB geometry against a null func table, which would traverse to
+> the stub and report no hit, rendering every such shape as invisible. The work is scoped:
+> `include/mitsuba/render/shapedata.h` already holds the cross-toolchain POD layouts
+> (Metal and OptiX share them; a HIP arm is a few lines), and
+> `src/render/metal/intersection_functions.metal` is a 506-line reference implementation
+> whose math ports to HIP C++ more directly than it did to MSL. The cross-repo half is a
+> drjit-core API to register that device source plus its function names, so
+> `hiprtBuildTraceKernels()` can be given real `numGeomTypes` / `funcNameSets` instead of
+> the zeros it passes today.
+>
+> **2. One bug, five symptoms.** Every remaining crash in the Mitsuba suite has the same
+> root cause: `hiprtBuildTraceKernels()` fails — `hiprtErrorInternal`, or a segfault
+> *inside HIP-RT itself* — on kernels that contain a trace **and** come from a symbolic
+> loop (`ad_loop`) or a vcall (`jit_var_call_reduce`). Those are exactly the kernels a
+> real integrator emits, which is why a direct `ray_intersect_preliminary` matches LLVM to
+> 1.19e-07 while `mi.render()` through the path integrator does not. Ruled out: cumulative
+> resource exhaustion (12 build/destroy cycles clean; 8 distinct traced kernels clean).
+> Next step is to dump the failing source into `tools/hip_validate`, which compiles
+> standalone through both arms and separates "our emitted HIP is invalid" from "HIP-RT
+> 3.0.3's builder cannot handle this kernel shape". **Not assumed to be shim-only** —
+> `hiprtBuildTraceKernels()` is the API the backend uses on real hardware too.
+> See BACKEND_NOTES §11n.1.
 
 *Milestone: `hip_ad_rgb` renders a scene matching `llvm_ad_rgb` within tolerance.*
 
