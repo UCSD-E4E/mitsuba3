@@ -250,9 +250,13 @@ CIE1932Tables<dr::CUDAArray<float>> color_space_tables_cuda;
 #if defined(MI_ENABLE_METAL)
 CIE1932Tables<dr::MetalArray<float>> color_space_tables_metal;
 #endif
+#if defined(MI_ENABLE_HIP)
+CIE1932Tables<dr::HIPArray<float>> color_space_tables_hip;
+#endif
 NAMESPACE_END(detail)
 
-void color_management_static_initialization(bool cuda, bool llvm, bool metal) {
+void color_management_static_initialization(bool cuda, bool llvm, bool metal,
+                                            bool hip) {
     detail::color_space_tables_scalar.initialize(cie1931_tbl);
 #if defined(MI_ENABLE_LLVM)
     if (llvm)
@@ -266,7 +270,11 @@ void color_management_static_initialization(bool cuda, bool llvm, bool metal) {
     if (metal)
         detail::color_space_tables_metal.initialize(cie1931_tbl);
 #endif
-    (void) cuda; (void) llvm; (void) metal;
+#if defined(MI_ENABLE_HIP)
+    if (hip)
+        detail::color_space_tables_hip.initialize(cie1931_tbl);
+#endif
+    (void) cuda; (void) llvm; (void) metal; (void) hip;
 }
 
 void color_management_static_shutdown() {
@@ -279,6 +287,9 @@ void color_management_static_shutdown() {
 #endif
 #if defined(MI_ENABLE_METAL)
     detail::color_space_tables_metal.release();
+#endif
+#if defined(MI_ENABLE_HIP)
+    detail::color_space_tables_hip.release();
 #endif
 }
 

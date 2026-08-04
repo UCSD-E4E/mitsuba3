@@ -21,6 +21,10 @@
 #  include "scene_metal.inl"
 #endif
 
+#if defined(MI_ENABLE_HIP)
+#  include "scene_hip.inl"
+#endif
+
 NAMESPACE_BEGIN(mitsuba)
 
 MI_VARIANT Scene<Float, Spectrum>::Scene(const Properties &props)

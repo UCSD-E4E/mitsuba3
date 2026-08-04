@@ -68,7 +68,11 @@ def list_all_render_test_configs():
     """
     configs = []
     for variant in mi.variants():
-        is_jit = "cuda" in variant or "llvm" in variant or "metal" in variant
+        # Every non-scalar variant is JIT-compiled. Derived rather than listed:
+        # the enumeration form silently classified each newly added backend as
+        # non-JIT, which does not fail here -- it quietly picks the wrong
+        # render configuration.
+        is_jit = not variant.startswith("scalar")
         is_polarized = "polarized" in variant
 
         for scene_fname in SCENES:
@@ -181,7 +185,7 @@ def z_test(mean, sample_count, reference, reference_var):
 def test_render(variant, scene_fname, integrator_type, jit_flags_key):
     mi.set_variant(variant)
 
-    if 'cuda' in variant or 'llvm' in variant or 'metal' in variant:
+    if not variant.startswith('scalar'):  # i.e. JIT; see render_config()
         dr.flush_malloc_cache()
         for k, v in JIT_FLAG_OPTIONS[jit_flags_key].items():
             dr.set_flag(k, bool(v))

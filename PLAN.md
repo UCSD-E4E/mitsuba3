@@ -1105,6 +1105,47 @@ after editing `tests/*.py` (they are copied at configure time). See BACKEND_NOTE
 `MI_ENABLE_CUDA` guard sites; compile out `optixdenoiser` **and exclude its tests**
 (§5.9 gap 2). **Wire the four test-harness sites in §5.9** — after which the whole suite
 runs on HIP automatically.
+
+> **⏳ IN PROGRESS — the milestone is met; the suite is not yet green.**
+>
+> **Milestone met.** `hip_ad_rgb` renders a mesh scene matching `llvm_ad_rgb` to
+> **max |diff| 1.19e-07** (single-precision epsilon), with HIP-RT's own log confirming
+> the real path: `createGeometry → buildGeometry → createScene → buildScene`. The match
+> is the proof — LLVM traces through Embree and certainly sees the geometry, so HIP-RT
+> agreeing to 1e-7 means it is intersecting rather than missing.
+>
+> **Done.** `MI_ENABLE_HIP` + the 24 `hip_*` variants; `mitsuba::is_gpu_v`; the
+> `SceneAccel` branch, `accel_hip.h`, `scene_hip.inl` and `hip/accel.{h,cpp}`;
+> `jit_hip_rt_context()` in drjit-core; the four §5.9 harness sites.
+>
+> **§5.9 gap 2 needed no work.** The denoiser is already triple-guarded — CUDA-only
+> pytest fixtures, `MI_ENABLE_CUDA` in CMake, and a constructor `Throw`.
+>
+> **Six wiring bugs, every one of which fails late or silently:** Mitsuba never forwarded
+> `DRJIT_ENABLE_HIP`; it read drjit-core's `DRJIT_HIPRT_PATH`, which is only set inside
+> the *shim* branch and so would have failed on the MI210 itself; `PRIVATE` link options
+> on an OBJECT library never reach the consuming link; `drjit_v.cpp` would have imported
+> `drjit.scalar` for a HIP variant; and the color-space tables had neither a HIP arm nor a
+> HIP flag in their initializer, so `get_color_space_tables<HIP>()` returned the **scalar**
+> tables. That last one happened to fail at compile time. That was luck — the same
+> omission in a non-template context is a host pointer handed to a device kernel, and it
+> is now the worked example in `is_gpu_v`'s documentation of where *not* to use the trait.
+>
+> **The §5 count of "~20 `is_cuda_v` sites to generalize" was misleading** — 31 exist, and
+> they are four different questions. 15 genuinely ask "CPU path?" or "host-addressable
+> memory?" (→ `is_gpu_v`); 4 are genuinely OptiX-specific and already correctly inside
+> `MI_ENABLE_CUDA` (→ unchanged); 2 select a per-backend *resource* and need real arms,
+> not a trait; and `sphere.cpp`/`cylinder.cpp` test `is_cuda_v<FloatP>` on a **packet**
+> type, which is always false and unreachable on GPU variants — dead, deliberately left
+> alone rather than perturbing numerics for no gain.
+>
+> **Not done.** Custom/implicit geometry — sphere, disk, cylinder, sdfgrid, ellipsoids —
+> needs `hiprtFuncTable` intersection callbacks. `build_hip_accel()` **throws** rather
+> than building AABB geometry against a null func table, which would traverse to the stub
+> and report no hit, rendering every such shape as invisible. Curves likewise. And
+> `test_mesh.py::test14` aborts when run after its file-mates but passes in isolation —
+> a state-dependent crash of the same shape as Phase 6's `test72`, not yet diagnosed.
+
 *Milestone: `hip_ad_rgb` renders a scene matching `llvm_ad_rgb` within tolerance.*
 
 ### Phase 8 — Spectral bring-up & validation

@@ -181,7 +181,7 @@ public:
     }
 
     ~Ellipsoids() {
-        if constexpr (dr::is_cuda_v<Float>)
+        if constexpr (is_gpu_v<Float>)
             jit_free(m_device_bboxes);
         jit_free(m_host_bboxes);
     }
@@ -206,7 +206,7 @@ public:
     ScalarBoundingBox3f bbox() const override { return m_bbox; }
 
     ScalarBoundingBox3f bbox(ScalarIndex index) const override {
-        if constexpr (dr::is_cuda_v<Float>)
+        if constexpr (is_gpu_v<Float>)
             Throw("bbox(ScalarIndex) is not available in CUDA mode!");
         Assert(index <= primitive_count());
         auto bbox = ((BoundingBoxType*) m_host_bboxes)[index];

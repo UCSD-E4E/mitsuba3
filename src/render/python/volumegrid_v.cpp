@@ -57,7 +57,7 @@ MI_PY_EXPORT(VolumeGrid) {
 
             DynamicBuffer<ScalarFloat> cpu_array;
 
-            if constexpr (!dr::is_cuda_v<TensorXf>) {
+            if constexpr (!is_gpu_v<TensorXf>) {
                 cpu_array = obj.array();
             } else {
                 dr::eval(obj);

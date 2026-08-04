@@ -8,7 +8,7 @@ MI_VARIANT ShapeGroup<Float, Spectrum>::ShapeGroup(const Properties &props)
     // ID is now stored in base class JitObject
 
 #if !defined(MI_ENABLE_EMBREE)
-    if constexpr (!dr::is_cuda_v<Float> && !dr::is_metal_v<Float>)
+    if constexpr (!is_gpu_v<Float>)
         m_kdtree = new ShapeKDTree(props);
 #endif
     m_shape_types = 0;
@@ -36,7 +36,7 @@ MI_VARIANT ShapeGroup<Float, Spectrum>::ShapeGroup(const Properties &props)
 #endif
 
 #if !defined(MI_ENABLE_EMBREE)
-            if constexpr (!dr::is_cuda_v<Float> && !dr::is_metal_v<Float>)
+            if constexpr (!is_gpu_v<Float>)
                 m_kdtree->add_shape(shape);
 #endif
             uint32_t type = shape->shape_type();
@@ -44,7 +44,7 @@ MI_VARIANT ShapeGroup<Float, Spectrum>::ShapeGroup(const Properties &props)
         }
     }
 #if !defined(MI_ENABLE_EMBREE)
-    if constexpr (!dr::is_cuda_v<Float> && !dr::is_metal_v<Float>) {
+    if constexpr (!is_gpu_v<Float>) {
         if (!m_kdtree->ready())
             m_kdtree->build();
 
@@ -118,7 +118,7 @@ ShapeGroup<Float, Spectrum>::compute_surface_interaction(const Ray3f &ray,
     // per-geometry (from the SBT record / the Metal geom_shape table), so it
     // already names the actual child. The scalar and LLVM/Embree backends instead
     // resolve it from a within-group leaf index (``pi.shape_index``).
-    if constexpr (!dr::is_cuda_v<Float> && !dr::is_metal_v<Float>) {
+    if constexpr (!is_gpu_v<Float>) {
         if constexpr (!dr::is_array_v<Float>) {
             Assert(pi.shape_index < m_shapes.size());
             shape = m_shapes[pi.shape_index];
@@ -135,7 +135,7 @@ ShapeGroup<Float, Spectrum>::compute_surface_interaction(const Ray3f &ray,
 MI_VARIANT typename ShapeGroup<Float, Spectrum>::ScalarSize
 ShapeGroup<Float, Spectrum>::primitive_count() const {
 #if !defined(MI_ENABLE_EMBREE)
-    if constexpr (!dr::is_cuda_v<Float> && !dr::is_metal_v<Float>)
+    if constexpr (!is_gpu_v<Float>)
         return m_kdtree->primitive_count();
 #endif
 

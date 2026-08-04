@@ -115,4 +115,37 @@ template <typename T> using underlying_t = typename detail::underlying<T>::type;
 /// A variable that always evaluates to false (useful for static_assert)
 template <typename... > constexpr bool false_v = false;
 
+// =============================================================
+//! @{ \name Backend capability traits
+// =============================================================
+
+/**
+ * \brief Does this variant trace rays on a GPU?
+ *
+ * True for every backend whose \ref SceneAccel is a GPU acceleration structure
+ * (OptiX, Metal, HIP-RT), false for the CPU ones (Embree / native). That is the
+ * question a dozen sites in the renderer are actually asking when they refuse a
+ * scalar-index accessor, skip a host-side pointer fixup, or pick the
+ * non-vectorized branch.
+ *
+ * They used to spell it \c is_cuda_v<Float> || is_metal_v<Float>, or its
+ * negation. Written that way the predicate silently answers "no" for any GPU
+ * backend added afterwards -- Metal once, HIP again -- and it answers wrongly
+ * in the direction that compiles and runs, taking a CPU path on a device where
+ * host pointers are meaningless.
+ *
+ * \remark This is NOT a general replacement for asking about a specific
+ * backend. Sites that select a per-backend *resource* (the color-space tables
+ * in spectrum.h) or build a *discriminating* identifier (\ref type_suffix in
+ * simd.h) need one real arm per backend; using this trait there would silently
+ * collide two backends onto one answer, which is the same class of bug pointed
+ * the other way.
+ */
+template <typename T>
+constexpr bool is_gpu_v =
+    dr::is_cuda_v<T> || dr::is_metal_v<T> || dr::is_hip_v<T>;
+
+//! @}
+// =============================================================
+
 NAMESPACE_END(mitsuba)

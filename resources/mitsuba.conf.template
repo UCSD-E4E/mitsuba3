@@ -459,5 +459,132 @@
     "metal_ad_spectral_polarized": {
         "float": "dr::DiffArray<JitBackend::Metal, float>",
         "spectrum": "MuellerMatrix<Spectrum<Float, 4>>"
+    },
+
+    # HIP variant definitions
+    #
+    # The full 24, mirroring CUDA rather than Metal: gfx90a (CDNA2) has
+    # full-rate FP64, so the _double variants are real. The Metal block above
+    # omits them because Apple GPUs lack FP64 -- that is a hardware statement
+    # about Metal, not a convention for GPU backends.
+
+    "hip_mono": {
+        "float": "dr::HIPArray<float>",
+        "spectrum": "Color<Float, 1>"
+    },
+
+    "hip_mono_double": {
+        "float": "dr::HIPArray<double>",
+        "spectrum": "Color<Float, 1>"
+    },
+
+    "hip_mono_polarized": {
+        "float": "dr::HIPArray<float>",
+        "spectrum": "MuellerMatrix<Color<Float, 1>>"
+    },
+
+    "hip_mono_polarized_double": {
+        "float": "dr::HIPArray<double>",
+        "spectrum": "MuellerMatrix<Color<Float, 1>>"
+    },
+
+    "hip_rgb": {
+        "float": "dr::HIPArray<float>",
+        "spectrum": "Color<Float, 3>"
+    },
+
+    "hip_rgb_double": {
+        "float": "dr::HIPArray<double>",
+        "spectrum": "Color<Float, 3>"
+    },
+
+    "hip_rgb_polarized": {
+        "float": "dr::HIPArray<float>",
+        "spectrum": "MuellerMatrix<Color<Float, 3>>"
+    },
+
+    "hip_rgb_polarized_double": {
+        "float": "dr::HIPArray<double>",
+        "spectrum": "MuellerMatrix<Color<Float, 3>>"
+    },
+
+    "hip_spectral": {
+        "float": "dr::HIPArray<float>",
+        "spectrum": "Spectrum<Float, 4>"
+    },
+
+    "hip_spectral_double": {
+        "float": "dr::HIPArray<double>",
+        "spectrum": "Spectrum<Float, 4>"
+    },
+
+    "hip_spectral_polarized": {
+        "float": "dr::HIPArray<float>",
+        "spectrum": "MuellerMatrix<Spectrum<Float, 4>>"
+    },
+
+    "hip_spectral_polarized_double": {
+        "float": "dr::HIPArray<double>",
+        "spectrum": "MuellerMatrix<Spectrum<Float, 4>>"
+    },
+
+    "hip_ad_mono": {
+        "float": "dr::DiffArray<JitBackend::HIP, float>",
+        "spectrum": "Color<Float, 1>"
+    },
+
+    "hip_ad_mono_double": {
+        "float": "dr::DiffArray<JitBackend::HIP, double>",
+        "spectrum": "Color<Float, 1>"
+    },
+
+    "hip_ad_mono_polarized": {
+        "float": "dr::DiffArray<JitBackend::HIP, float>",
+        "spectrum": "MuellerMatrix<Color<Float, 1>>"
+    },
+
+    "hip_ad_mono_polarized_double": {
+        "float": "dr::DiffArray<JitBackend::HIP, double>",
+        "spectrum": "MuellerMatrix<Color<Float, 1>>"
+    },
+
+    "hip_ad_rgb": {
+        "float": "dr::DiffArray<JitBackend::HIP, float>",
+        "spectrum": "Color<Float, 3>"
+    },
+
+    "hip_ad_rgb_double": {
+        "float": "dr::DiffArray<JitBackend::HIP, double>",
+        "spectrum": "Color<Float, 3>"
+    },
+
+    "hip_ad_rgb_polarized": {
+        "float": "dr::DiffArray<JitBackend::HIP, float>",
+        "spectrum": "MuellerMatrix<Color<Float, 3>>"
+    },
+
+    "hip_ad_rgb_polarized_double": {
+        "float": "dr::DiffArray<JitBackend::HIP, double>",
+        "spectrum": "MuellerMatrix<Color<Float, 3>>"
+    },
+
+    "hip_ad_spectral": {
+        "float": "dr::DiffArray<JitBackend::HIP, float>",
+        "spectrum": "Spectrum<Float, 4>"
+    },
+
+    "hip_ad_spectral_double": {
+        "float": "dr::DiffArray<JitBackend::HIP, double>",
+        "spectrum": "Spectrum<Float, 4>"
+    },
+
+    "hip_ad_spectral_polarized": {
+        "float": "dr::DiffArray<JitBackend::HIP, float>",
+        "spectrum": "MuellerMatrix<Spectrum<Float, 4>>"
+    },
+
+    "hip_ad_spectral_polarized_double": {
+        "float": "dr::DiffArray<JitBackend::HIP, double>",
+        "spectrum": "MuellerMatrix<Spectrum<Float, 4>>"
     }
 }

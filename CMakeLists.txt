@@ -182,7 +182,11 @@ if (MI_VARIANTS MATCHES "metal_")
   set(MI_ENABLE_METAL ON)
 endif()
 
-if (MI_ENABLE_LLVM OR MI_ENABLE_CUDA OR MI_ENABLE_METAL)
+if (MI_VARIANTS MATCHES "hip_")
+  set(MI_ENABLE_HIP ON)
+endif()
+
+if (MI_ENABLE_LLVM OR MI_ENABLE_CUDA OR MI_ENABLE_METAL OR MI_ENABLE_HIP)
   set(MI_ENABLE_JIT ON)
 endif()
 
@@ -320,6 +324,11 @@ endif()
 if (MI_ENABLE_METAL)
   message(STATUS "Mitsuba: using Metal for GPU ray tracing.")
   add_definitions(-DMI_ENABLE_METAL=1)
+endif()
+
+if (MI_ENABLE_HIP)
+  message(STATUS "Mitsuba: using HIP-RT for GPU ray tracing.")
+  add_definitions(-DMI_ENABLE_HIP=1)
 endif()
 
 if (MI_ENABLE_EMBREE)

@@ -211,7 +211,16 @@ extern MI_EXPORT_LIB CIE1932Tables<dr::CUDAArray<float>> color_space_tables_cuda
 #if defined(MI_ENABLE_METAL)
 extern MI_EXPORT_LIB CIE1932Tables<dr::MetalArray<float>> color_space_tables_metal;
 #endif
+#if defined(MI_ENABLE_HIP)
+extern MI_EXPORT_LIB CIE1932Tables<dr::HIPArray<float>> color_space_tables_hip;
+#endif
 
+/// One table set per backend -- NOT a place for mitsuba::is_gpu_v.
+///
+/// These tables live in the backend's own device memory, so each backend needs
+/// its own. Collapsing two backends onto one arm here would hand a HIP kernel a
+/// CUDA pointer, which is exactly the failure mode is_gpu_v is documented not
+/// to cover.
 template <typename Float> auto get_color_space_tables() {
 #if defined(MI_ENABLE_LLVM)
     if constexpr (dr::is_llvm_v<Float>)
@@ -228,12 +237,19 @@ template <typename Float> auto get_color_space_tables() {
         return color_space_tables_metal;
     else
 #endif
+#if defined(MI_ENABLE_HIP)
+    if constexpr (dr::is_hip_v<Float>)
+        return color_space_tables_hip;
+    else
+#endif
     return color_space_tables_scalar;
 }
 NAMESPACE_END(detail)
 
 /// Allocate arrays for the color space tables
-extern MI_EXPORT_LIB void color_management_static_initialization(bool cuda, bool llvm, bool metal = false);
+extern MI_EXPORT_LIB void color_management_static_initialization(bool cuda, bool llvm,
+                                                                 bool metal = false,
+                                                                 bool hip = false);
 extern MI_EXPORT_LIB void color_management_static_shutdown();
 
 /**

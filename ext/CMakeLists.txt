@@ -50,6 +50,16 @@ set_directory_properties(PROPERTIES COMPILE_OPTIONS "${MI_EXT_COMPILE_OPTIONS}")
 set(DRJIT_ENABLE_JIT      ${MI_ENABLE_JIT} CACHE BOOL " " FORCE)
 set(DRJIT_ENABLE_AUTODIFF ${MI_ENABLE_AUTODIFF} CACHE BOOL " " FORCE)
 set(DRJIT_ENABLE_PYTHON   ${MI_ENABLE_PYTHON} CACHE BOOL " " FORCE)
+
+# CUDA and Metal default ON in Dr.Jit on their respective platforms, so a
+# cuda_/metal_ variant gets its backend without being asked for. HIP defaults
+# OFF (it needs an explicit HIP-RT path), so requesting a hip_ variant has to
+# turn it on -- otherwise Mitsuba compiles MI_ENABLE_HIP code against a Dr.Jit
+# that has no HIP backend, and the failure surfaces much later as a missing
+# DRJIT_HIPRT_PATH or an undefined jit_hip_* symbol.
+if (MI_ENABLE_HIP)
+  set(DRJIT_ENABLE_HIP ON CACHE BOOL " " FORCE)
+endif()
 if (MI_PROFILER_NVTX)
     include_directories(${CUDA_TOOLKIT_ROOT_DIR}/include)
     set(DRJIT_ENABLE_NVTX ON)

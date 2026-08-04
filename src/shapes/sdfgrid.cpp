@@ -209,7 +209,7 @@ public:
         m_voxel_size = voxel_size;
         dr::make_opaque(m_inv_shape, m_voxel_size);
 
-        if constexpr (!dr::is_cuda_v<Float>) {
+        if constexpr (!is_gpu_v<Float>) {
             dr::eval(m_grid_texture.value()); // Make sure the SDF data is evaluated
             m_host_grid_data = m_grid_texture.tensor().data();
         }
@@ -269,7 +269,7 @@ public:
     }
 
     ScalarBoundingBox3f bbox(ScalarIndex index) const override {
-        if constexpr (dr::is_cuda_v<Float>)
+        if constexpr (is_gpu_v<Float>)
             NotImplementedError("bbox(ScalarIndex index)");
 
         return reinterpret_cast<InputScalarBoundingBox3f*>(m_bboxes_ptr)[index];

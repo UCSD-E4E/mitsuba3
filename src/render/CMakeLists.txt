@@ -66,6 +66,36 @@ if (MI_ENABLE_METAL)
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
+if (MI_ENABLE_HIP)
+  # hip/accel.cpp calls hiprtCreateGeometry() directly, so this target needs its
+  # own include and link -- drjit-core's are PRIVATE.
+  #
+  # Do not rely on drjit-core to have set DRJIT_HIPRT_PATH: it only does so
+  # inside its CUDA-shim branch, so on real AMD hardware (shim off) the cache
+  # variable is absent and a Mitsuba check that assumed otherwise would fail
+  # spuriously on the one machine that matters.
+  if (NOT DRJIT_HIPRT_PATH)
+    if (DEFINED ENV{HIPRT_NV_PATH})
+      set(DRJIT_HIPRT_PATH "$ENV{HIPRT_NV_PATH}" CACHE PATH "HIP-RT location")
+    elseif (DEFINED ENV{HIPRT_PATH})
+      set(DRJIT_HIPRT_PATH "$ENV{HIPRT_PATH}" CACHE PATH "HIP-RT location")
+    endif()
+  endif()
+
+  if (NOT DRJIT_HIPRT_PATH OR NOT EXISTS "${DRJIT_HIPRT_PATH}/include/hiprt/hiprt.h")
+    message(FATAL_ERROR
+      "Mitsuba: a hip_* variant is enabled but HIP-RT was not found. Set "
+      "DRJIT_HIPRT_PATH (or \$HIPRT_NV_PATH before configuring) to a HIP-RT "
+      "installation. On non-AMD hardware this must be the CUDA-enabled build; "
+      "see the hipRtNv derivation in flake.nix.")
+  endif()
+
+  set(LIBRENDER_EXTRA_SRC
+    hip/accel.cpp hip/accel.h
+    ${LIBRENDER_EXTRA_SRC}
+  )
+endif()
+
 add_library(mitsuba-render OBJECT
   ${INC_DIR}/fwd.h
   ${INC_DIR}/ior.h
@@ -124,6 +154,17 @@ target_link_libraries(mitsuba-render PUBLIC struct-jit)
 
 if (MI_ENABLE_METAL)
   target_link_libraries(mitsuba-render PRIVATE "-framework Metal" "-framework Foundation")
+endif()
+
+if (MI_ENABLE_HIP)
+  target_include_directories(mitsuba-render PRIVATE "${DRJIT_HIPRT_PATH}/include")
+  # PUBLIC and by absolute path, both deliberately. mitsuba-render is an OBJECT
+  # library, so its objects are linked into libmitsuba.so by another target:
+  # PRIVATE link options do not reach that link line (the first attempt failed
+  # there with "cannot find -lhiprt64"), and an absolute path carries the
+  # directory with it, so no target_link_directories() is needed and CMake sets
+  # the build-tree rpath itself.
+  target_link_libraries(mitsuba-render PUBLIC "${DRJIT_HIPRT_PATH}/lib/libhiprt64.so")
 endif()
 
 if (MI_ENABLE_JIT)
