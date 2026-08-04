@@ -1139,6 +1139,19 @@ runs on HIP automatically.
 > type, which is always false and unreachable on GPU variants — dead, deliberately left
 > alone rather than perturbing numerics for no gain.
 >
+> **Suite baseline (144 files, HIP variant only): 743 passed, 69 files fully green,
+> 48 with no HIP-parameterized tests, 16 with problems.** Notably `test_renders.py` — the
+> statistical z-test against reference EXRs, the real correctness bar — is **184 passed /
+> 12 failed**.
+>
+> The 16 fall into three groups, and only one is a bug:
+>
+> | Group | Files | Status |
+> |---|---|---|
+> | Custom/curve geometry refused by design | sphere, sdfgrid, bspline/linearcurve, merge, ellipsoidsmesh, scene, volprim, most of renders' 12 | **working as intended** — `build_hip_accel()` throws with a precise message rather than rendering them invisible |
+> | `hiprtBuildTraceKernels` failure | test_ad, test_aov, test_ad_integrators, test_freeze, test_mesh, test_instance | **one bug, six symptoms** |
+> | Marginal statistics | test_hair `test06_chi2` | p=0.009929 vs α=0.01, 22/23 checks accepted — a false positive is ~21% likely across 23 tests at that threshold. Flagged, not "fixed". |
+>
 > **Two things remain, and they are independent.**
 >
 > **1. Custom/implicit geometry** — sphere, disk, cylinder, sdfgrid, ellipsoids, plus
