@@ -165,10 +165,9 @@ static bool make_build_input(HIPAccelData *d, const ShapeIR &g,
         if (fn >= HIP_ISECT_FN_COUNT)
             Throw("build_hip_accel(): the scene contains a custom (implicit) "
                   "shape of type 0x%x, which the HIP backend cannot intersect "
-                  "yet -- only spheres and triangle meshes are implemented. "
-                  "Use the llvm or cuda variants for scenes with disks, "
-                  "cylinders, sdfgrids or ellipsoids.",
-                  (uint32_t) g.type);
+                  "yet. Triangle meshes always work; for custom shapes, %s. "
+                  "Use the llvm or cuda variants for the rest.",
+                  (uint32_t) g.type, hip_supported_shapes().c_str());
 
         if (g.prim_count == 0 || g.pdata_size == 0 || !g.fill_aabbs ||
             !g.fill_data)
