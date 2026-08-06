@@ -38,14 +38,18 @@ enum HIPIntersectionFn : uint32_t {
     HIP_ISECT_FN_SPHERE   = 0,
     HIP_ISECT_FN_DISK     = 1,
     HIP_ISECT_FN_CYLINDER = 2,
-    HIP_ISECT_FN_COUNT    = 3
+    HIP_ISECT_FN_ELLIPSOIDS = 3,
+    HIP_ISECT_FN_SDFGRID  = 4,
+    HIP_ISECT_FN_COUNT    = 5
 };
 
 /// Device function names, in \ref HIPIntersectionFn order.
 static const char *const hip_isect_fn_names[] = {
     "mi_hip_isect_sphere",
     "mi_hip_isect_disk",
-    "mi_hip_isect_cylinder"
+    "mi_hip_isect_cylinder",
+    "mi_hip_isect_ellipsoids",
+    "mi_hip_isect_sdfgrid"
 };
 
 static_assert(std::size(hip_isect_fn_names) == HIP_ISECT_FN_COUNT,
@@ -63,6 +67,8 @@ inline uint32_t hip_fn_index(ShapeType type) {
         case ShapeType::Sphere:   return HIP_ISECT_FN_SPHERE;
         case ShapeType::Disk:     return HIP_ISECT_FN_DISK;
         case ShapeType::Cylinder: return HIP_ISECT_FN_CYLINDER;
+        case ShapeType::Ellipsoids: return HIP_ISECT_FN_ELLIPSOIDS;
+        case ShapeType::SDFGrid:  return HIP_ISECT_FN_SDFGRID;
         default:                  return HIP_ISECT_FN_COUNT;
     }
 }
@@ -97,6 +103,28 @@ inline std::string hip_supported_shapes() {
 /// instance is exact rather than approximate -- build_hip_accel() expands every
 /// (instance, geometry) pair into its own HIP-RT instance, so an instance
 /// identifies a geometry uniquely.
+/// PER-SHAPE record for an SDF grid; must match SDFGridData in
+/// src/render/hip/intersection_functions.hip and mirrors OptixSDFGridData.
+///
+/// HIP takes OptiX's zero-copy design here rather than Metal's packed blob: the
+/// grid, its voxel index table and its AABBs are Dr.Jit arrays, so on HIP they
+/// already live in HIP device memory and there is nothing to copy. (Ellipsoids
+/// goes the other way and follows Metal, because its per-ellipsoid affine is
+/// derived data that does not exist on the device in that form. Follow whichever
+/// backend's design matches where the data already is.)
+struct alignas(16) HIPSDFGridData {
+    const uint32_t *voxel_indices;
+    const float *grid_data;
+    uint32_t res_x, res_y, res_z, pad_;
+    mi_float4 voxel_size;
+    mi_float4 to_object[3];
+};
+
+static_assert(sizeof(HIPSDFGridData) == 96,
+              "HIPSDFGridData must match SDFGridData in "
+              "src/render/hip/intersection_functions.hip -- the two are "
+              "compiled by different toolchains and nothing else compares them.");
+
 struct HIPIsectTypeData {
     /// Device pointer to the combined array of this type's records.
     const void *prims;

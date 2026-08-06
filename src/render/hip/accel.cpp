@@ -169,38 +169,65 @@ static bool make_build_input(HIPAccelData *d, const ShapeIR &g,
                   "Use the llvm or cuda variants for the rest.",
                   (uint32_t) g.type, hip_supported_shapes().c_str());
 
-        if (g.prim_count == 0 || g.pdata_size == 0 || !g.fill_aabbs ||
-            !g.fill_data)
+        // A shape describes its data one of two ways, and both are legitimate:
+        //
+        //   PER-PRIMITIVE (pdata_size > 0): prim_count records of equal size,
+        //     e.g. one SphereData per sphere. The device adds hit.primID.
+        //   PER-SHAPE (pdata_size == 0, data_size > 0): a single variable-length
+        //     record, e.g. SDFGrid's header + pointers. The device does NOT add
+        //     hit.primID -- it uses it to index inside the record.
+        //
+        // What must never happen is neither, which is what a describe() behind
+        // a gate that omits HIP produces.
+        bool per_shape = (g.pdata_size == 0);
+        if (g.prim_count == 0 || g.data_size_bytes() == 0 || !g.fill_data ||
+            (!g.fill_aabbs && !g.aabb_buffer))
             Throw("build_hip_accel(): custom geometry of type 0x%x described "
-                  "itself incompletely (%zu primitives, %zu bytes each, "
-                  "fill_aabbs %s, fill_data %s). A missing callback usually "
-                  "means the shape's describe() is behind a preprocessor gate "
-                  "that does not list HIP -- see MI_GPU_CUSTOM_SHAPES.",
-                  (uint32_t) g.type, g.prim_count, g.pdata_size,
-                  g.fill_aabbs ? "ok" : "MISSING",
+                  "itself incompletely (%zu primitives, %zu bytes of data, "
+                  "aabbs %s, fill_data %s). A missing callback usually means "
+                  "the shape's describe() is behind a preprocessor gate that "
+                  "does not list HIP -- see MI_GPU_CUSTOM_SHAPES.",
+                  (uint32_t) g.type, g.prim_count, g.data_size_bytes(),
+                  g.aabb_buffer ? "device" : (g.fill_aabbs ? "fill" : "MISSING"),
                   g.fill_data ? "ok" : "MISSING");
 
         // --- AABBs -------------------------------------------------------
-        // One device buffer per geometry rather than a shared suballocated
-        // pool: HIP-RT indexes them with a byte stride from the base pointer,
-        // and separate allocations keep every base 16-byte aligned without
-        // padding arithmetic. Custom geometries are few.
-        std::vector<float> aabbs(g.prim_count * 6);
-        g.fill_aabbs(g.ctx, aabbs.data());
-        void *aabb_dev = upload(d, aabbs.data(), aabbs.size() * sizeof(float));
+        // A shape that already has its AABBs on the device (SDFGrid builds
+        // them with Dr.Jit, so they are HIP memory) hands them over directly;
+        // there is nothing to copy and copying a large grid's worth would be
+        // pure waste. Otherwise fill on the host and upload.
+        //
+        // One buffer per geometry rather than a shared suballocated pool:
+        // HIP-RT indexes them with a byte stride from the base pointer, and
+        // separate allocations keep every base 16-byte aligned without padding
+        // arithmetic. Custom geometries are few.
+        void *aabb_dev;
+        if (g.aabb_buffer) {
+            aabb_dev = const_cast<void *>(g.aabb_buffer); // not owned
+        } else {
+            std::vector<float> aabbs(g.prim_count * 6);
+            g.fill_aabbs(g.ctx, aabbs.data());
+            aabb_dev = upload(d, aabbs.data(), aabbs.size() * sizeof(float));
+        }
 
-        // --- Per-primitive records ---------------------------------------
+        // --- Records ------------------------------------------------------
         CustomTypeData &td = types[fn];
-        if (td.elem_size != 0 && td.elem_size != g.pdata_size)
-            Throw("build_hip_accel(): shapes of type 0x%x disagree on their "
-                  "per-primitive data size (%zu vs %zu). The combined buffer "
-                  "strides by a single element size.",
-                  (uint32_t) g.type, td.elem_size, g.pdata_size);
-        td.elem_size = g.pdata_size;
+        if (!per_shape) {
+            if (td.elem_size != 0 && td.elem_size != g.pdata_size)
+                Throw("build_hip_accel(): shapes of type 0x%x disagree on "
+                      "their per-primitive data size (%zu vs %zu). The device "
+                      "strides by a single element size.",
+                      (uint32_t) g.type, td.elem_size, g.pdata_size);
+            td.elem_size = g.pdata_size;
+        }
 
+        // `base` is a BYTE offset, not an element index, so that per-primitive
+        // and per-shape layouts share one table. Each slice starts 16-byte
+        // aligned: the records contain float4s, and a misaligned load of one is
+        // undefined on the device rather than merely slow.
+        size_t off = (td.records.size() + 15u) & ~(size_t) 15u;
         size_t total = g.data_size_bytes();
-        base_out = (uint32_t) (td.records.size() / g.pdata_size);
-        size_t off = td.records.size();
+        base_out = (uint32_t) off;
         td.records.resize(off + total);
         g.fill_data(g.ctx, td.records.data() + off);
 

@@ -27,6 +27,10 @@
 #  include "../render/metal/shapes.h"
 #endif
 
+#if defined(MI_ENABLE_HIP)
+#  include "../render/hip/shapes.h"
+#endif
+
 NAMESPACE_BEGIN(mitsuba)
 
 /**!
@@ -532,6 +536,33 @@ public:
             };
             g.fill_data = [](const void *ctx, void *out) {
                 static_cast<const SDFGrid *>(ctx)->gpu_fill_data(out);
+            };
+        }
+#endif
+#if defined(MI_ENABLE_HIP)
+        if constexpr (dr::is_hip_v<Float>) {
+            // HIP follows OptiX's zero-copy design rather than Metal's packed
+            // blob: m_bboxes_ptr, m_voxel_indices_ptr and the grid tensor are
+            // Dr.Jit arrays, so on HIP they are already HIP device memory.
+            // See src/render/hip/shapes.h.
+            g.data_size = sizeof(HIPSDFGridData);
+            g.aabb_buffer = m_bboxes_ptr;
+            g.fill_data = [](const void *ctx, void *out) {
+                auto *self = const_cast<SDFGrid *>(
+                    static_cast<const SDFGrid *>(ctx));
+                auto shape = self->m_grid_texture.tensor().shape();
+                HIPSDFGridData &data = *static_cast<HIPSDFGridData *>(out);
+                data = HIPSDFGridData{};
+                data.voxel_indices = (const uint32_t *) self->m_voxel_indices_ptr;
+                data.grid_data     = self->m_grid_texture.tensor().array().data();
+                data.res_x         = (uint32_t) shape[2];
+                data.res_y         = (uint32_t) shape[1];
+                data.res_z         = (uint32_t) shape[0];
+                ScalarVector3f vs  = self->m_voxel_size.scalar();
+                data.voxel_size    = { (float) vs[0], (float) vs[1],
+                                       (float) vs[2], 0.f };
+                shapedata::fill_affine3x4(
+                    self->m_to_world.scalar().inverse().matrix, data.to_object);
             };
         }
 #endif

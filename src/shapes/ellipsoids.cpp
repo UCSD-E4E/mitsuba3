@@ -20,8 +20,29 @@
     #include "optix/ellipsoids.cuh"
 #endif
 
+/**
+ * \brief Defined when a backend needs the HOST-FILLED per-ellipsoid record --
+ * one \c shapedata::EllipsoidData per ellipsoid, computed on the CPU at scene
+ * build time.
+ *
+ * Metal and HIP both take that route. OptiX does not: it hands the device two
+ * pointers into the existing ellipsoid arrays and reads them zero-copy, so it
+ * needs none of the machinery below.
+ *
+ * This is one macro rather than four spellings of
+ * <tt>defined(MI_ENABLE_METAL) || defined(MI_ENABLE_HIP)</tt> because the
+ * feature spans an include, a file-static helper, \c describe() and two fill
+ * functions -- and extending three of the four is exactly how HIP was left with
+ * a shape that compiled and then failed to declare `shapedata`.
+ */
+#if defined(MI_ENABLE_METAL) || defined(MI_ENABLE_HIP)
+#  define MI_ELLIPSOIDS_HOST_RECORDS 1
+#endif
+
 #if defined(MI_ENABLE_METAL)
     #include "../render/metal/shapes.h"
+#elif defined(MI_ENABLE_HIP)
+    #include "../render/hip/shapes.h"
 #endif
 
 NAMESPACE_BEGIN(mitsuba)
@@ -124,7 +145,7 @@ It is designed for use with volumetric primitive integrators, as detailed in
         }
  */
 
-#if defined(MI_ENABLE_METAL)
+#if defined(MI_ELLIPSOIDS_HOST_RECORDS)
 // Center, effective scale (s) and object->world rotation (R) of one ellipsoid
 // from its 10 floats (center, scale, quaternion).
 static void ellipsoid_frame(const float *e10, float ext,
@@ -431,8 +452,10 @@ public:
     // Multi-primitive shape: one AABB + one per-ellipsoid data record.
     void describe(ShapeIR &g) const override {
         Base::describe(g);
-#if defined(MI_ENABLE_METAL)
-        if constexpr (dr::is_metal_v<Float>) {
+#if defined(MI_ELLIPSOIDS_HOST_RECORDS)
+        // The OptiX arm below is a different design (zero-copy device pointers)
+        // and deliberately stays CUDA-only. See BACKEND_NOTES 11o.4.
+        if constexpr (dr::is_metal_v<Float> || dr::is_hip_v<Float>) {
             g.pdata_size = sizeof(shapedata::EllipsoidData);
             g.fill_aabbs = [](const void *ctx, void *out) {
                 static_cast<const Ellipsoids *>(ctx)->gpu_fill_aabbs(out);
@@ -461,7 +484,7 @@ public:
     }
 #endif
 
-#if defined(MI_ENABLE_METAL)
+#if defined(MI_ELLIPSOIDS_HOST_RECORDS)
     /// Migrate the ellipsoid arrays to the host and invoke \c f with the
     /// world-space frame (rotation \c R, center \c c, scale \c s) of each.
     template <typename Func>
@@ -479,7 +502,7 @@ public:
     }
 
     void gpu_fill_aabbs(void *out) const {
-        if constexpr (dr::is_metal_v<Float>) {
+        if constexpr (dr::is_metal_v<Float> || dr::is_hip_v<Float>) {
             float *dst = (float *) out;
             gpu_for_each_frame([&](size_t i, float R[3][3], float c[3], float s[3]) {
                 float d[3];
@@ -496,7 +519,7 @@ public:
     }
 
     void gpu_fill_data(void *out) const {
-        if constexpr (dr::is_metal_v<Float>) {
+        if constexpr (dr::is_metal_v<Float> || dr::is_hip_v<Float>) {
             shapedata::EllipsoidData *dst = (shapedata::EllipsoidData *) out;
             gpu_for_each_frame([&](size_t i, float R[3][3], float c[3], float s[3]) {
                 // Row-major world->object affine: diag(1/s) * R^T * translate(-c).
