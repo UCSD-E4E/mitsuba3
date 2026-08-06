@@ -8,7 +8,15 @@
 #if defined(__METAL_VERSION__)
     typedef float4 mi_float4;
     typedef uint   mi_uint;
-#elif defined(__CUDACC__) || defined(__CUDA_ARCH__)
+#elif defined(__HIP__) || defined(__HIP_DEVICE_COMPILE__)
+    // Listed before the CUDA arm on purpose: under the DRJIT_HIP_CUDA_SHIM the
+    // device source is compiled by NVRTC, so the CUDA macros are ALSO defined
+    // and the CUDA arm would silently claim it. Both arms happen to produce the
+    // same typedefs today, which is exactly why an accidental capture here
+    // would go unnoticed until they diverge.
+    typedef float4       mi_float4;
+    typedef unsigned int mi_uint;
+#elif defined(__CUDACC__) || defined(__CUDA_ARCH__) || defined(__CUDACC_RTC__)
     typedef float4       mi_float4;
     typedef unsigned int mi_uint;
 #else
@@ -20,7 +28,11 @@
 
 namespace shapedata {
 
-#if !defined(__METAL_VERSION__) && !defined(__CUDACC__) && !defined(__CUDA_ARCH__)
+// Host only. The HIP conditions must be here too, or this template is dragged
+// into HIP device compilation, where <cstddef> and the Matrix type do not exist.
+#if !defined(__METAL_VERSION__) && !defined(__CUDACC__) && \
+    !defined(__CUDA_ARCH__) && !defined(__CUDACC_RTC__) && \
+    !defined(__HIP__) && !defined(__HIP_DEVICE_COMPILE__)
 /// Host-side helper: pack the upper three rows of an affine matrix into the
 /// ``mi_float4[3]`` layout the GPU intersection functions read.
 template <typename Matrix>
