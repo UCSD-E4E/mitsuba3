@@ -13,7 +13,7 @@
     #include "optix/sphere.cuh"
 #endif
 
-#if defined(MI_ENABLE_METAL) || defined(MI_ENABLE_CUDA)
+#if defined(MI_GPU_CUSTOM_SHAPES)
     #include <mitsuba/render/shapedata.h>
 #endif
 
@@ -720,7 +720,7 @@ public:
     //! @}
     // =============================================================
 
-#if defined(MI_ENABLE_METAL) || defined(MI_ENABLE_CUDA)
+#if defined(MI_GPU_CUSTOM_SHAPES)
     void gpu_fill_data(void *out) const {
         shapedata::SphereData &d = *(shapedata::SphereData *) out;
         ScalarPoint3f c = m_center.scalar();

@@ -14,7 +14,7 @@
     #include "optix/disk.cuh"
 #endif
 
-#if defined(MI_ENABLE_METAL) || defined(MI_ENABLE_CUDA)
+#if defined(MI_GPU_CUSTOM_SHAPES)
     #include <mitsuba/render/shapedata.h>
 #endif
 
@@ -507,7 +507,7 @@ public:
         return dr::grad_enabled(m_to_world.value());
     }
 
-#if defined(MI_ENABLE_METAL) || defined(MI_ENABLE_CUDA)
+#if defined(MI_GPU_CUSTOM_SHAPES)
     void gpu_fill_data(void *out) const {
         shapedata::DiskData &d = *(shapedata::DiskData *) out;
         shapedata::fill_affine3x4(m_to_world.scalar().inverse().matrix,

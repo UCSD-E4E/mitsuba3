@@ -90,8 +90,24 @@ if (MI_ENABLE_HIP)
       "see the hipRtNv derivation in flake.nix.")
   endif()
 
+  # Embed the custom-intersection HIP source as text. Unlike Metal, which ships
+  # a prebuilt .metallib, HIP-RT generates its intersectFunc dispatcher inside
+  # hiprtBuildTraceKernels() and compiles it together with each traversing
+  # kernel -- so what has to reach the runtime is SOURCE, not an object
+  # (BACKEND_NOTES 7a-3, 11o). bin2c gives a build-time dependency on the .hip
+  # file, so editing it rebuilds without a reconfigure.
+  include(${CMAKE_SOURCE_DIR}/ext/drjit/ext/drjit-core/cmake/bin2c.cmake)
+  set(HIP_ISECT_OUT "${CMAKE_CURRENT_BINARY_DIR}/hip_isect_source.c")
+  drjit_embed_binary(
+    OUTPUT  ${HIP_ISECT_OUT}
+    SYMBOLS mi_hip_isect_source
+    INPUTS  ${CMAKE_CURRENT_SOURCE_DIR}/hip/intersection_functions.hip
+    TYPE    "char"
+    SIZE)
+
   set(LIBRENDER_EXTRA_SRC
-    hip/accel.cpp hip/accel.h
+    hip/accel.cpp hip/accel.h hip/shapes.h
+    "${HIP_ISECT_OUT}"
     ${LIBRENDER_EXTRA_SRC}
   )
 endif()

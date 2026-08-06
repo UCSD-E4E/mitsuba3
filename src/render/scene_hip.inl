@@ -29,15 +29,34 @@ NAMESPACE_BEGIN(mitsuba)
 /// supplies the geometry index through the instance-indexed table passed to
 /// jit_hip_configure_scene(). By the time the values reach this code they mean
 /// what Metal's mean, which is why the lookup below is unchanged.
+///
+/// THE INDEX IS THE EXPANDED INSTANCE ID. That is the whole subtlety here.
+/// \c hit.instanceID counts HIP-RT instances, of which build_hip_accel() makes
+/// one per (SceneIR instance, geometry) pair -- not one per SceneIR instance.
+/// So \c offsets needs one entry per expanded instance, and every expanded
+/// instance drawn from the same BLAS repeats that BLAS's table base; the
+/// geometry index that distinguishes them arrives separately, as output 6.
+///
+/// Indexing this by SceneIR instance instead reads past the end of the buffer
+/// for every geometry after the first in a BLAS. It is a quiet failure: SceneIR
+/// buckets same-kind geometry into ONE BLAS, so a scene with a single mesh (or
+/// with only one BLAS, where every base is 0 and reading zeros off the end
+/// happens to give the right answer) looks perfectly correct, and a scene with
+/// two meshes silently shades each hit with its neighbour's BSDF.
+///
+/// The expansion order below must match build_hip_accel()'s exactly -- both
+/// walk sd.instances, then geoms in order.
 static void build_recovery_table_data(const SceneIR &sd,
                                       std::vector<uint32_t> &offsets,
                                       std::vector<uint32_t> &table) {
     offsets.clear();
     table.clear();
-    offsets.reserve(sd.instances.size());
     for (const InstanceEntry &inst : sd.instances) {
-        offsets.push_back((uint32_t) table.size());
-        for (const ShapeIR &g : sd.blases[inst.blas_index].geoms)
+        const std::vector<ShapeIR> &geoms = sd.blases[inst.blas_index].geoms;
+        uint32_t base = (uint32_t) table.size();
+        for (size_t i = 0; i < geoms.size(); ++i)
+            offsets.push_back(base);
+        for (const ShapeIR &g : geoms)
             table.push_back(jit_registry_id(g.ctx));
     }
 }

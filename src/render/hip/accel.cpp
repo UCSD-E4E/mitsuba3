@@ -35,6 +35,7 @@
 #if defined(MI_ENABLE_HIP)
 
 #include "accel.h"
+#include "shapes.h"
 
 #include <drjit-core/hip.h>
 #include <drjit-core/jit.h>
@@ -43,7 +44,13 @@
 #include <hiprt/hiprt.h>
 
 #include <cstring>
+#include <string>
 #include <vector>
+
+/// hip/intersection_functions.hip, embedded verbatim by the build
+/// (src/render/CMakeLists.txt). Not NUL-terminated -- bin2c emits raw bytes.
+extern "C" const char mi_hip_isect_source[];
+extern "C" const size_t mi_hip_isect_source_size;
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -51,6 +58,8 @@ NAMESPACE_BEGIN(mitsuba)
 struct HIPAccelData {
     hiprtContext context = nullptr;
     hiprtScene scene = nullptr;
+    /// Custom-primitive dispatch table, or null for a mesh-only scene.
+    hiprtFuncTable func_table = nullptr;
     /// One per expanded (instance, geometry) pair, in instance order.
     std::vector<hiprtGeometry> geometries;
     /// Device buffers handed to HIP-RT or to jit_hip_configure_scene().
@@ -83,17 +92,53 @@ static bool is_triangle_kind(ShapeIR::Kind k) {
     return k == ShapeIR::Kind::Triangles || k == ShapeIR::Kind::TrianglesCulled;
 }
 
+/// Register the custom-primitive device source with drjit-core.
+///
+/// The source is not linked into a library the way Metal's .metallib is:
+/// hiprtBuildTraceKernels() generates the intersectFunc dispatcher from
+/// funcNameSets and compiles it together with the kernel, so drjit-core has to
+/// prepend this text to EVERY traversing kernel it emits
+/// (BACKEND_NOTES 7a-3, 11o). Registration is global and idempotent; calling it
+/// once per scene build is fine and keeps mesh-only processes from paying for
+/// intersection code they will never dispatch to.
+static void register_isect_source() {
+    static const std::string source(mi_hip_isect_source,
+                                    mi_hip_isect_source_size);
+
+    // No filter functions: Mitsuba's any-hit logic is in the integrator, and a
+    // filter that always accepts is exactly what HIP-RT does with a null entry.
+    const char *filters[HIP_ISECT_FN_COUNT] = {};
+
+    jit_hip_set_isect_source(source.c_str(), hip_isect_fn_names, filters,
+                             HIP_ISECT_FN_COUNT);
+}
+
 // ---------------------------------------------------------------------------
 //  Geometry construction
 // ---------------------------------------------------------------------------
 
+/// Per-geometry-type accumulator for custom-primitive records.
+///
+/// One combined array per type, because a HIP-RT function table hands the
+/// intersection function ONE data pointer per geometry type (hip/shapes.h).
+/// Each geometry's slice is found through the instance-indexed \c base table.
+struct CustomTypeData {
+    /// Concatenated per-primitive records, host side.
+    std::vector<uint8_t> records;
+    /// Per-primitive record size; all shapes of one type must agree.
+    size_t elem_size = 0;
+};
+
 /// Fill \c bi for one ShapeIR, uploading whatever the shape needs.
 ///
-/// Returns false for a geometry kind this backend cannot build yet, having
-/// already reported why. The caller must not build it.
+/// For custom (AABB) geometry this also appends the shape's per-primitive
+/// records to \c types[fn] and reports the element index they start at through
+/// \c base_out, which the device reads via \c HIPIsectTypeData::base.
 static bool make_build_input(HIPAccelData *d, const ShapeIR &g,
-                             ShapeIR::Kind kind, hiprtGeometryBuildInput &bi) {
+                             ShapeIR::Kind kind, hiprtGeometryBuildInput &bi,
+                             CustomTypeData *types, uint32_t &base_out) {
     bi = {};
+    base_out = 0;
 
     if (is_triangle_kind(kind)) {
         // vertex_ptr / index_ptr are already DEVICE pointers on a GPU backend
@@ -109,22 +154,63 @@ static bool make_build_input(HIPAccelData *d, const ShapeIR &g,
     }
 
     if (kind == ShapeIR::Kind::Custom) {
-        // The AABBs themselves are easy -- fill_aabbs() writes prim_count * 6
-        // floats. What is missing is the other half: an AABB-list geometry only
-        // reports a hit if a custom intersection function says so, and wiring
-        // Mitsuba's per-ShapeType intersectors into a hiprtFuncTable is not
-        // done yet.
-        //
-        // Refusing loudly rather than building it. A geometry built here with
-        // no func table traverses to the stub intersectFunc, which reports no
-        // hit -- so every sphere, disk, cylinder and sdfgrid in the scene would
-        // silently render as empty space. This project has had enough failures
-        // that look like a working system.
-        Throw("build_hip_accel(): the scene contains custom (implicit) "
-              "geometry -- sphere, disk, cylinder, sdfgrid or ellipsoids -- "
-              "which the HIP backend cannot intersect yet: its hiprtFuncTable "
-              "intersection callbacks are not implemented. Triangle meshes are "
-              "supported. Use a mesh-only scene, or the llvm/cuda variants.");
+        uint32_t fn = hip_fn_index(g.type);
+
+        // Refuse loudly rather than build it. An AABB geometry whose type has
+        // no intersection function dispatches to a `default: return false` arm
+        // of HIP-RT's generated switch, which reports a miss for every ray --
+        // so the shape would render as empty space with nothing anywhere
+        // reporting a problem. This project has had enough failures that look
+        // like a working system.
+        if (fn >= HIP_ISECT_FN_COUNT)
+            Throw("build_hip_accel(): the scene contains a custom (implicit) "
+                  "shape of type 0x%x, which the HIP backend cannot intersect "
+                  "yet -- only spheres and triangle meshes are implemented. "
+                  "Use the llvm or cuda variants for scenes with disks, "
+                  "cylinders, sdfgrids or ellipsoids.",
+                  (uint32_t) g.type);
+
+        if (g.prim_count == 0 || g.pdata_size == 0 || !g.fill_aabbs ||
+            !g.fill_data)
+            Throw("build_hip_accel(): custom geometry of type 0x%x described "
+                  "itself incompletely (%zu primitives, %zu bytes each, "
+                  "fill_aabbs %s, fill_data %s). A missing callback usually "
+                  "means the shape's describe() is behind a preprocessor gate "
+                  "that does not list HIP -- see MI_GPU_CUSTOM_SHAPES.",
+                  (uint32_t) g.type, g.prim_count, g.pdata_size,
+                  g.fill_aabbs ? "ok" : "MISSING",
+                  g.fill_data ? "ok" : "MISSING");
+
+        // --- AABBs -------------------------------------------------------
+        // One device buffer per geometry rather than a shared suballocated
+        // pool: HIP-RT indexes them with a byte stride from the base pointer,
+        // and separate allocations keep every base 16-byte aligned without
+        // padding arithmetic. Custom geometries are few.
+        std::vector<float> aabbs(g.prim_count * 6);
+        g.fill_aabbs(g.ctx, aabbs.data());
+        void *aabb_dev = upload(d, aabbs.data(), aabbs.size() * sizeof(float));
+
+        // --- Per-primitive records ---------------------------------------
+        CustomTypeData &td = types[fn];
+        if (td.elem_size != 0 && td.elem_size != g.pdata_size)
+            Throw("build_hip_accel(): shapes of type 0x%x disagree on their "
+                  "per-primitive data size (%zu vs %zu). The combined buffer "
+                  "strides by a single element size.",
+                  (uint32_t) g.type, td.elem_size, g.pdata_size);
+        td.elem_size = g.pdata_size;
+
+        size_t total = g.data_size_bytes();
+        base_out = (uint32_t) (td.records.size() / g.pdata_size);
+        size_t off = td.records.size();
+        td.records.resize(off + total);
+        g.fill_data(g.ctx, td.records.data() + off);
+
+        bi.type = hiprtPrimitiveTypeAABBList;
+        bi.geomType = fn;
+        bi.primitive.aabbList.aabbs = (hiprtDevicePtr) aabb_dev;
+        bi.primitive.aabbList.aabbCount = (uint32_t) g.prim_count;
+        bi.primitive.aabbList.aabbStride = 6 * sizeof(float);
+        return true;
     }
 
     if (kind == ShapeIR::Kind::BSplineCurve || kind == ShapeIR::Kind::LinearCurve)
@@ -191,17 +277,35 @@ std::pair<HIPAccelData *, uint32_t> build_hip_accel(const SceneIR &sd,
     std::vector<hiprtFrameMatrix> frames;
     std::vector<uint32_t> geometry_ids, user_instance_ids;
 
-    bool any_backface_culled = false;
+    // Custom-primitive records, accumulated per geometry type, plus the
+    // instance-indexed base table the device uses to find its slice.
+    CustomTypeData custom_types[HIP_ISECT_FN_COUNT];
+    std::vector<uint32_t> custom_base;
+
+    bool any_backface_culled = false, any_custom = false;
 
     for (const InstanceEntry &inst : sd.instances) {
         const BlasEntry &blas = sd.blases[inst.blas_index];
         if (blas.kind == ShapeIR::Kind::TrianglesCulled)
             any_backface_culled = true;
+        if (blas.kind == ShapeIR::Kind::Custom)
+            any_custom = true;
 
         for (uint32_t geom_idx = 0; geom_idx < blas.geoms.size(); ++geom_idx) {
             hiprtGeometryBuildInput bi;
-            if (!make_build_input(d, blas.geoms[geom_idx], blas.kind, bi))
+            uint32_t base = 0;
+            if (!make_build_input(d, blas.geoms[geom_idx], blas.kind, bi,
+                                  custom_types, base))
                 continue;
+
+            // One entry per EXPANDED instance, which is what hit.instanceID
+            // indexes. A shape referenced by several ShapeGroup instances
+            // therefore has its records written once per instance rather than
+            // shared -- wasteful, and matched by the geometry itself being
+            // rebuilt per instance a few lines below. Both are worth fixing
+            // together, with a (blas, geometry) -> handle cache, once there is
+            // hardware to measure the win on.
+            custom_base.push_back(base);
 
             hiprtGeometry geom = build_geometry(d, bi, compact);
             d->geometries.push_back(geom);
@@ -283,17 +387,60 @@ std::pair<HIPAccelData *, uint32_t> build_hip_accel(const SceneIR &sd,
     void *user_ids_dev = upload(d, user_instance_ids.data(),
                                 user_instance_ids.size() * sizeof(uint32_t));
 
+    // --- Custom-primitive function table -----------------------------------
+    //
+    // Built after the scene because it needs the instance-indexed base table,
+    // whose length is the expanded instance count. Nothing traverses in
+    // between, so the ordering costs nothing.
+    if (any_custom) {
+        register_isect_source();
+
+        void *base_dev = upload(d, custom_base.data(),
+                                custom_base.size() * sizeof(uint32_t));
+
+        HIPRT_CHECK(hiprtCreateFuncTable(context, HIP_ISECT_FN_COUNT,
+                                         /* numRayTypes = */ 1,
+                                         d->func_table));
+
+        for (uint32_t fn = 0; fn < HIP_ISECT_FN_COUNT; ++fn) {
+            const CustomTypeData &td = custom_types[fn];
+
+            // A type with no geometry in this scene still gets an entry: the
+            // generated dispatcher indexes the table by geometry type
+            // unconditionally, and a null funcDataSets row would be read before
+            // anything could establish that no such geometry exists.
+            HIPIsectTypeData host{};
+            if (!td.records.empty()) {
+                host.prims = upload(d, td.records.data(), td.records.size());
+                host.base  = (const uint32_t *) base_dev;
+            }
+
+            hiprtFuncDataSet set{};
+            set.intersectFuncData =
+                upload(d, &host, sizeof(HIPIsectTypeData));
+            set.filterFuncData = nullptr;
+            HIPRT_CHECK(hiprtSetFuncTable(context, d->func_table, fn,
+                                          /* rayType = */ 0, set));
+        }
+    }
+
     // Bit 0 triangles, bit 1 custom/AABB, bit 2 curves, bit 3 backface culling
-    // required -- the same encoding Metal uses. Only triangles can be built
-    // above, so bits 1 and 2 are unreachable for now; the mask is assembled
-    // from what was actually built rather than hardcoded, so it stays honest
-    // when the custom path lands.
-    uint32_t types_mask = 1u; // triangles
+    // required -- the same encoding Metal uses. Curves are still unbuildable,
+    // so bit 2 is unreachable; the mask is assembled from what was actually
+    // built rather than hardcoded, so it stays honest.
+    uint32_t types_mask = 0;
+    for (const InstanceEntry &inst : sd.instances) {
+        ShapeIR::Kind k = sd.blases[inst.blas_index].kind;
+        if (is_triangle_kind(k))
+            types_mask |= 1u;
+        else if (k == ShapeIR::Kind::Custom)
+            types_mask |= 1u << 1;
+    }
     if (any_backface_culled)
         types_mask |= 1u << 3;
 
     uint32_t scene_index = jit_hip_configure_scene(
-        (void *) d->scene, /* func_table = */ nullptr, geometry_ids_dev,
+        (void *) d->scene, (void *) d->func_table, geometry_ids_dev,
         user_ids_dev, types_mask);
 
     // The HIP-RT objects must outlive the scene variable, which can outlast
@@ -308,6 +455,8 @@ std::pair<HIPAccelData *, uint32_t> build_hip_accel(const SceneIR &sd,
                 hiprtDestroyGeometry(dd->context, g);
             if (dd->scene)
                 hiprtDestroyScene(dd->context, dd->scene);
+            if (dd->func_table)
+                hiprtDestroyFuncTable(dd->context, dd->func_table);
             for (void *p : dd->device_buffers)
                 jit_free(p);
             delete dd;

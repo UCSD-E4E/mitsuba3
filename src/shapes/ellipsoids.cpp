@@ -427,7 +427,7 @@ public:
         return si;
     }
 
-#if defined(MI_ENABLE_METAL) || defined(MI_ENABLE_CUDA)
+#if defined(MI_GPU_CUSTOM_SHAPES)
     // Multi-primitive shape: one AABB + one per-ellipsoid data record.
     void describe(ShapeIR &g) const override {
         Base::describe(g);

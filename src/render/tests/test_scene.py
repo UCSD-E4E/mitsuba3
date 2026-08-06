@@ -403,3 +403,57 @@ def test14_many_top_level_analytic_shapes(variants_vec_backends_once_rgb):
         got = dr.gather(mi.ShapePtr, si.shape, mi.UInt32(i))
         assert dr.all(got == shapes[i])
 
+
+def test15_many_top_level_meshes(variants_vec_backends_once_rgb):
+    """The same recovery contract as test14, using only triangle meshes.
+
+    test14 covers this with analytic shapes, which means a backend that has not
+    implemented custom-primitive intersection refuses the scene and never
+    reaches the assertions -- so a genuine recovery bug hides behind what looks
+    like a known, deliberate limitation. (That is precisely how an off-by-one in
+    the HIP backend's instance-indexed shape table survived: the one scene it
+    was checked against had a single mesh.)
+
+    Meshes are supported everywhere, so this one cannot be skipped into
+    silence. Several same-kind shapes are what matters: the GPU backends bucket
+    them into ONE bottom-level structure, and the per-hit tables that take them
+    apart again are indexed differently from the description they were built
+    from.
+
+    The assertion is deliberately positional rather than ``si.shape ==
+    shapes[i]``: ``scene.shapes()`` is not guaranteed to preserve the order the
+    shapes were declared in, and for meshes it does not. Checking that the
+    recovered shape is the one standing where the ray hit is both the property
+    that actually matters and one that no ordering convention can invalidate."""
+    from mitsuba import ScalarTransform4f as T
+
+    n = 8
+    d = {'type': 'scene'}
+    for i in range(n):
+        x = float(i) - n / 2
+        d[f'mesh_{i}'] = {'type': 'rectangle',
+                          'to_world': T().translate([x, 0, 0]) @ T().scale(0.3)}
+    scene = mi.load_dict(d)
+    shapes = scene.shapes()
+    assert len(shapes) == n
+
+    cx = dr.arange(mi.Float, n) - n / 2
+    ray = mi.Ray3f(o=mi.Point3f(cx, 0, -10), d=mi.Vector3f(0, 0, 1),
+                   time=0.0, wavelengths=[])
+    si = scene.ray_intersect(ray)
+
+    assert dr.all(si.is_valid())
+    assert dr.allclose(si.p.x, cx, atol=1e-3)
+    assert dr.all(si.instance == dr.zeros(mi.ShapePtr))
+
+    # Ray i strikes the rectangle centred at x = i - n/2; the shape recovered
+    # for it must be that rectangle.
+    centres = [float(s.bbox().center().x) for s in shapes]
+    for i in range(n):
+        got = dr.gather(mi.ShapePtr, si.shape, mi.UInt32(i))
+        matched = [c for c, s in zip(centres, shapes) if dr.all(got == s)]
+        assert len(matched) == 1, f'ray {i} recovered no known shape'
+        assert matched[0] == pytest.approx(float(i) - n / 2, abs=1e-5), \
+            f'ray {i} hit x={float(i) - n / 2} but recovered the shape at ' \
+            f'x={matched[0]}'
+

@@ -4,6 +4,22 @@
 #include <mitsuba/core/config.h>
 #include <mitsuba/core/traits.h>
 
+/**
+ * \brief Defined when at least one enabled backend consumes the GPU-side custom
+ * shape description -- \c ShapeIR::fill_aabbs, \c fill_data and the
+ * <tt>shapedata.h</tt> POD layouts.
+ *
+ * Every such backend must appear here. This exists because the alternative --
+ * spelling <tt>defined(MI_ENABLE_METAL) || defined(MI_ENABLE_CUDA)</tt> at each
+ * of the six sites that need it -- is precisely the pattern that has silently
+ * omitted a backend over and over in this port: a shape then compiles fine,
+ * describes itself with a null \c fill_data, and renders as empty space with
+ * nothing anywhere reporting a problem. One list, one place to extend.
+ */
+#if defined(MI_ENABLE_CUDA) || defined(MI_ENABLE_METAL) || defined(MI_ENABLE_HIP)
+#  define MI_GPU_CUSTOM_SHAPES 1
+#endif
+
 NAMESPACE_BEGIN(mitsuba)
 
 struct BSDFContext;
