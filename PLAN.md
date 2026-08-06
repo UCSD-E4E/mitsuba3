@@ -1106,13 +1106,23 @@ after editing `tests/*.py` (they are copied at configure time). See BACKEND_NOTE
 (§5.9 gap 2). **Wire the four test-harness sites in §5.9** — after which the whole suite
 runs on HIP automatically.
 
-> **⏳ IN PROGRESS — the milestone is met; the suite is not yet green.**
+> **⏳ IN PROGRESS — traversal, attribution and three custom shapes done; the suite is not yet green.**
 >
-> **Milestone met.** `hip_ad_rgb` renders a mesh scene matching `llvm_ad_rgb` to
-> **max |diff| 1.19e-07** (single-precision epsilon), with HIP-RT's own log confirming
-> the real path: `createGeometry → buildGeometry → createScene → buildScene`. The match
-> is the proof — LLVM traces through Embree and certainly sees the geometry, so HIP-RT
-> agreeing to 1e-7 means it is intersecting rather than missing.
+> **Milestone met, with a correction to what it proved.** `hip_ad_rgb` renders a mesh
+> scene matching `llvm_ad_rgb` to **max |diff| 1.19e-07**, with HIP-RT's own log
+> confirming the real path: `createGeometry → buildGeometry → createScene → buildScene`.
+> LLVM traces through Embree and certainly sees the geometry, so HIP-RT agreeing to 1e-7
+> means it is intersecting rather than missing. **That inference holds.**
+>
+> What it did **not** prove is per-shape attribution. The scene had one mesh, and
+> `SceneIR` buckets same-kind geometry into a single BLAS — so every shape-table base was
+> `0`, and an out-of-bounds read of the recovery table returned the correct answer by
+> coincidence. A two-mesh scene had been mis-shading every hit after the first since this
+> phase began. Fixed; see BACKEND_NOTES §11n.2, and `test15_many_top_level_meshes`, which
+> covers the contract with meshes only so no backend can skip it.
+>
+> The reusable form: **a scene with one of something cannot distinguish an index from a
+> base.**
 >
 > **Done.** `MI_ENABLE_HIP` + the 24 `hip_*` variants; `mitsuba::is_gpu_v`; the
 > `SceneAccel` branch, `accel_hip.h`, `scene_hip.inl` and `hip/accel.{h,cpp}`;
@@ -1139,45 +1149,69 @@ runs on HIP automatically.
 > type, which is always false and unreachable on GPU variants — dead, deliberately left
 > alone rather than perturbing numerics for no gain.
 >
-> **Suite baseline (144 files, HIP variant only): 743 passed, 69 files fully green,
-> 48 with no HIP-parameterized tests, 16 with problems.** Notably `test_renders.py` — the
-> statistical z-test against reference EXRs, the real correctness bar — is **184 passed /
-> 12 failed**.
+> **Suite baseline (144 files, HIP variant only), re-measured after custom primitives:
+> 757 passed, 74 files fully green, 48 with no HIP-parameterized tests, 14 with
+> problems** (was 743 / 69 / 48 / 16). `test_renders.py` is **190 passed / 6 failed**,
+> and all 6 are one scene refused for its `sdfgrid`.
 >
-> The 16 fall into three groups, and only one is a bug:
+> Every one of the 14 is attributed:
 >
-> | Group | Files | Status |
+> | Cause | Files | Status |
 > |---|---|---|
-> | Custom/curve geometry refused by design | sphere, sdfgrid, bspline/linearcurve, merge, ellipsoidsmesh, scene, volprim, most of renders' 12 | **working as intended** — `build_hip_accel()` throws with a precise message rather than rendering them invisible |
-> | `hiprtBuildTraceKernels` failure | test_ad, test_aov, test_ad_integrators, test_freeze, test_mesh, test_instance | **one bug, six symptoms** |
+> | `hiprtBuildTraceKernels` crash | test_ad, test_aov, test_ad_integrators, test_freeze, test_mesh, test_instance, test_ptracer | **one bug, seven symptoms** — and it is NONDETERMINISTIC (§11n.1a): same binary, same command, SEGV / abort / SEGV. Do not classify these by stack signature. |
+> | sdfgrid not implemented | test_sdfgrid, test_renders (all 6) | refused by type, message generated from the capability table |
+> | ellipsoids not implemented | test_volprim_rf_basic, test_ellipsoidsmesh | refused by type |
+> | curves not implemented | test_bsplinecurve, test_linearcurve | refused by type |
 > | Marginal statistics | test_hair `test06_chi2` | p=0.009929 vs α=0.01, 22/23 checks accepted — a false positive is ~21% likely across 23 tests at that threshold. Flagged, not "fixed". |
+>
+> **A refusal is not a free pass.** `test14_many_top_level_analytic_shapes` was in the
+> "refused by design" column of the previous baseline. It was also the only test checking
+> per-shape attribution, and it built its scene from spheres *and* disks — so the §11n.2
+> bug sat behind what read as a known limitation. When a backend refuses a feature, check
+> what else the refusing tests were measuring (§11o.3).
 >
 > **Two things remain, and they are independent.**
 >
-> **1. Custom/implicit geometry** — sphere, disk, cylinder, sdfgrid, ellipsoids, plus
-> curves — needs `hiprtFuncTable` intersection callbacks. `build_hip_accel()` **throws**
-> rather than building AABB geometry against a null func table, which would traverse to
-> the stub and report no hit, rendering every such shape as invisible. The work is scoped:
-> `include/mitsuba/render/shapedata.h` already holds the cross-toolchain POD layouts
-> (Metal and OptiX share them; a HIP arm is a few lines), and
-> `src/render/metal/intersection_functions.metal` is a 506-line reference implementation
-> whose math ports to HIP C++ more directly than it did to MSL. The cross-repo half is a
-> drjit-core API to register that device source plus its function names, so
-> `hiprtBuildTraceKernels()` can be given real `numGeomTypes` / `funcNameSets` instead of
-> the zeros it passes today.
+> **1. Custom/implicit geometry — DONE for sphere, disk and cylinder.** AABB-list
+> geometry, a `hiprtFuncTable`, per-primitive data upload, and device intersectors in
+> `src/render/hip/intersection_functions.hip` (text embedded into libmitsuba-render and
+> registered through the new `jit_hip_set_isect_source()`; HIP-RT generates its dispatcher
+> inside `hiprtBuildTraceKernels()`, so what must reach the runtime is *source*, not an
+> object). The signature HIP-RT expects is in none of its headers — settled by
+> `tools/hip_validate/isect_probe`, which recovers it from the shipped library and proves
+> it by building both a correct and a deliberately wrong version (BACKEND_NOTES §11o.1).
 >
-> **2. One bug, five symptoms.** Every remaining crash in the Mitsuba suite has the same
-> root cause: `hiprtBuildTraceKernels()` fails — `hiprtErrorInternal`, or a segfault
-> *inside HIP-RT itself* — on kernels that contain a trace **and** come from a symbolic
-> loop (`ad_loop`) or a vcall (`jit_var_call_reduce`). Those are exactly the kernels a
-> real integrator emits, which is why a direct `ray_intersect_preliminary` matches LLVM to
-> 1.19e-07 while `mi.render()` through the path integrator does not. Ruled out: cumulative
-> resource exhaustion (12 build/destroy cycles clean; 8 distinct traced kernels clean).
-> Next step is to dump the failing source into `tools/hip_validate`, which compiles
-> standalone through both arms and separates "our emitted HIP is invalid" from "HIP-RT
-> 3.0.3's builder cannot handle this kernel shape". **Not assumed to be shim-only** —
+> Data location is simpler than Metal's: HIP-RT passes one pointer per geometry *type*
+> and `hit.instanceID` is live on entry, so one instance-indexed base table replaces
+> Metal's two-level lookup — exact, because a HIP-RT instance references exactly one
+> geometry.
+>
+> **Still refused, by type, naming themselves: ellipsoids, sdfgrid, and curves.** These
+> are the ones that are not transcription — variable-length per-shape data, where Metal
+> fills per-ellipsoid records and OptiX hands over two device pointers plus a precomputed
+> AABB buffer. That is a design choice, not a port.
+>
+> **2. One bug, seven symptoms — and it is random.** Every remaining crash has the same
+> root cause: `hiprtBuildTraceKernels()` fails on kernels that contain a trace **and**
+> come from a symbolic loop (`ad_loop`) or a vcall (`jit_var_call_reduce`) — exactly the
+> kernels a real integrator emits.
+>
+> The emitted source is **exonerated**: the exact text drjit-core logs on failure builds
+> successfully standalone through `hiprtBuildTraceKernels` with argument-for-argument
+> identical parameters (`tools/hip_validate/rtrepro`). Also ruled out by experiment:
+> cumulative resource exhaustion (12 build/destroy cycles clean, 8 distinct traced kernels
+> clean), missing CUDA context binding (a real bug, fixed, crash survives), and device
+> memory (5.6 GB of 6 GB free at the crash).
+>
+> **New, and the most useful fact about it: the failure is nondeterministic.** Same file,
+> same command, same binary — SEGV / abort / SEGV, always at the same test, with
+> `libhiprt` frames present in some runs and absent in others. So it is not the arguments
+> either; what is left is state — a race, a use-after-free, or an uninitialized read,
+> ours or HIP-RT's. Two consequences: never classify these crashes by stack signature
+> (that is a coin flip), and **any experiment against this bug needs repetition, because
+> a passing run proves nothing**. **Not assumed to be shim-only** —
 > `hiprtBuildTraceKernels()` is the API the backend uses on real hardware too.
-> See BACKEND_NOTES §11n.1.
+> See BACKEND_NOTES §11n.1 and §11n.1a.
 
 *Milestone: `hip_ad_rgb` renders a scene matching `llvm_ad_rgb` within tolerance.*
 
