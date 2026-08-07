@@ -1149,10 +1149,19 @@ runs on HIP automatically.
 > type, which is always false and unreachable on GPU variants — dead, deliberately left
 > alone rather than perturbing numerics for no gain.
 >
-> **Suite baseline (144 files, HIP variant only), re-measured after custom primitives:
-> 757 passed, 74 files fully green, 48 with no HIP-parameterized tests, 14 with
-> problems** (was 743 / 69 / 48 / 16). `test_renders.py` is **190 passed / 6 failed**,
-> and all 6 are one scene refused for its `sdfgrid`.
+> **Suite baseline (144 files, HIP variant only), after custom primitives AND the
+> §11n.1 fix: 1186 passed, 81 files fully green, 48 with no HIP-parameterized
+> tests, 7 with problems, and ZERO CRASHES** (was 743 / 69 / 48 / 16 / 7 crashes
+> at the start of the session). `test_renders.py` is **fully green, 196 passed**.
+>
+> The failure count rose from 21 to 141, which is the honest shape of the fix
+> rather than a regression: `test_freeze` (115) and `test_ad_integrators` (17)
+> used to die on their first test, so their failures were never counted. Every
+> one of those was always there.
+>
+> Note the per-file timeout is now 3600s. Files that used to crash in seconds do
+> real work: `test_ad_integrators` takes 40 minutes, `test_sdfgrid` 21. At the
+> old 1200s limit both would be recorded as failures while actually passing.
 >
 > Every one of the 14 is attributed:
 >
@@ -1191,26 +1200,46 @@ runs on HIP automatically.
 > fills per-ellipsoid records and OptiX hands over two device pointers plus a precomputed
 > AABB buffer. That is a design choice, not a port.
 >
-> **2. One bug, seven symptoms — and it is random.** Every remaining crash has the same
-> root cause: `hiprtBuildTraceKernels()` fails on kernels that contain a trace **and**
-> come from a symbolic loop (`ad_loop`) or a vcall (`jit_var_call_reduce`) — exactly the
-> kernels a real integrator emits.
+> **2. SOLVED — it was a duplicate module name, and it was ours.**
+> `hiprtBuildTraceKernels()` takes a `moduleName`; drjit-core passed the kernel
+> name, which is the SOURCE HASH. Compiling the same kernel twice in one process
+> hands HIP-RT a duplicate bookkeeping key, and the second build dereferences a
+> module handle that is no longer valid:
 >
-> The emitted source is **exonerated**: the exact text drjit-core logs on failure builds
-> successfully standalone through `hiprtBuildTraceKernels` with argument-for-argument
-> identical parameters (`tools/hip_validate/rtrepro`). Also ruled out by experiment:
-> cumulative resource exhaustion (12 build/destroy cycles clean, 8 distinct traced kernels
-> clean), missing CUDA context binding (a real bug, fixed, crash survives), and device
-> memory (5.6 GB of 6 GB free at the crash).
+> ```
+> hiprtBuildTraceKernels -> hiprt::Compiler::buildKernels
+>   -> oroModuleGetFunction -> cuModuleGetFunction -> SIGSEGV
+> ```
 >
-> **New, and the most useful fact about it: the failure is nondeterministic.** Same file,
-> same command, same binary — SEGV / abort / SEGV, always at the same test, with
-> `libhiprt` frames present in some runs and absent in others. So it is not the arguments
-> either; what is left is state — a race, a use-after-free, or an uninitialized read,
-> ours or HIP-RT's. Two consequences: never classify these crashes by stack signature
-> (that is a coin flip), and **any experiment against this bug needs repetition, because
-> a passing run proves nothing**. **Not assumed to be shim-only** —
-> `hiprtBuildTraceKernels()` is the API the backend uses on real hardware too.
+> **All eight crashing files now run.** `test_ad` 81 passed, `test_aov` 8,
+> `test_mesh` 50, `test_instance` 5, `test_ptracer` 18, `test_sdfgrid` 4,
+> `test_ad_integrators` 191/17, `test_freeze` 64/115 (no longer aborts).
+>
+> Three wrong beliefs kept it parked for two sessions, all recorded in
+> BACKEND_NOTES §11n.1a and §11n.1b: that it was **nondeterministic** (occurrence
+> is deterministic per kernel; only the manifestation varies), that it was
+> **probably a shim artifact** (the comfortable answer, since it implied waiting
+> for hardware), and that the emitted source was exonerated — true, but on
+> evidence from the *wrong failure mode*, since only the branch that RETURNS an
+> error ever logged its source.
+>
+> What worked, after every standalone reproducer had said "not this": stop asking
+> WHAT and instrument WHERE. `$DRJIT_HIP_DUMP_RT_SRC` writes BEGIN/END markers
+> around the call; 6 BEGIN / 5 END makes the fault's location a fact rather than
+> an inference off a stack trace that had already proven unreliable. gdb then
+> named the frame. Twenty minutes, against two sessions of hypothesis.
+>
+> **Two further HIP bugs surfaced underneath it**, both from silently diverging
+> from the Metal template: the scene handle was a `VarType::Pointer` (which
+> `dr.freeze` rejects outright, defeating the handle's only purpose), and every
+> resource pointer had `dep = 0` (the recorder resolves resources through
+> `dep[3]`, so a traced scene was unrecordable by construction).
+>
+> **Still open, and a design change rather than a patch:** Metal keys ALL its
+> resource handles on the SCENE OBJECT with a `ResourceKind` tag, recovering the
+> device address at launch, so one traversed variable covers every resource. HIP
+> makes one pointer variable per device address, which no single frozen input can
+> cover. That is the remaining 115 `test_freeze` failures.
 > See BACKEND_NOTES §11n.1 and §11n.1a.
 
 *Milestone: `hip_ad_rgb` renders a scene matching `llvm_ad_rgb` within tolerance.*
